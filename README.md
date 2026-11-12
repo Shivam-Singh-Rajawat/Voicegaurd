@@ -1,6 +1,6 @@
 # Voicegaurd
 
-Voicegaurd is a Windows prototype for inspecting audio for synthetic speech
+Voicegaurd is a prototype for inspecting audio for synthetic speech
 and replay signals. It supports microphone capture and local audio files,
 with optional speaker comparison against a supplied reference.
 
