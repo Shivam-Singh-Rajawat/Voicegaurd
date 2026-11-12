@@ -1,0 +1,57 @@
+#!/bin/bash
+#PBS -N vg_rtstream
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:15:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/runtime_stream_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -m pytest -q tests
+.venv/bin/python - <<'PILOT'
+import json
+import os
+from pathlib import Path
+import resource
+from time import perf_counter
+import pandas as pd
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.inference import Detector, VoicegaurdInference
+
+root = Path.cwd()
+engine = VoicegaurdInference({
+    "synthetic": Detector(root / "checkpoints/v3_wavlm_attn_20_fixed/best.pt"),
+    "replay": Detector(root / "checkpoints/v3_pa_wavlm/best.pt"),
+})
+window = max(round(detector.seconds * 16000) for detector in engine.detectors.values())
+rows = []
+source = pd.read_csv(root / "manifests/v3/la_select.csv")
+for label in [0, 1]:
+    for row in source[source.label == label].itertuples():
+        audio, _ = load_audio(row.path)
+        if audio.size < window:
+            continue
+        samples = audio[:window]
+        short = engine.analyze_samples(samples[:32000])
+        assert all(value["score"] is None and value["status"] == "insufficient_audio"
+                   for value in short["evidence"].values())
+        expected = engine.analyze_samples(samples)
+        stream = engine.open_stream()
+        start = perf_counter()
+        assert stream.push(samples[:32000]) == []
+        outputs = stream.push(samples[32000:])
+        elapsed = perf_counter() - start
+        assert len(outputs) == 1 and outputs[0]["start_seconds"] == 0
+        for name, expected_value in expected["evidence"].items():
+            assert abs(outputs[0]["evidence"][name]["score"] - expected_value["score"]) < 1e-6
+        rows.append({"uid": row.uid, "label": label, "cpu_seconds": elapsed})
+        break
+assert len(rows) == 2
+out = root / "reports" / ("runtime_stream_" + os.environ["PBS_JOBID"])
+out.mkdir()
+summary = {"pilot": rows, "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+           "scope": "Two LA development clips and two detectors on allocated CPU. Timing excludes audio capture and transport."}
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PILOT

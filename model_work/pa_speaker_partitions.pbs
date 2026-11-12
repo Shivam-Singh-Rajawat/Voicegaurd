@@ -1,0 +1,84 @@
+#!/bin/bash
+#PBS -N vg_papart
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=3gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/pa_partition_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+from collections import Counter, defaultdict
+import csv
+import json
+import os
+from pathlib import Path
+
+root = Path.cwd()
+base = root / "datasets/asvspoof2019/extracted/PA"
+protocol = base / "ASVspoof2019_PA_asv_protocols"
+enroll = {}
+known_groups = defaultdict(set)
+for group in ("female", "male"):
+    path = protocol / f"ASVspoof2019.PA.asv.dev.{group}.trn.txt"
+    for line in path.read_text().splitlines():
+        claim, ids = line.split()
+        speaker, environment = claim.rsplit("_", 1)
+        assert claim not in enroll
+        enroll[claim] = {"speaker": speaker, "environment": environment, "ids": ids.split(",")}
+        known_groups[group].add(speaker)
+assert known_groups["female"].isdisjoint(known_groups["male"])
+assert sum(len(v) for v in known_groups.values()) == 10
+with (root / "manifests/asv2019_pa_dev.csv").open(newline="") as stream:
+    metadata = {row["audio_id"]: row for row in csv.DictReader(stream)}
+background = sorted({r["speaker_id"] for r in metadata.values()}
+                    - set().union(*known_groups.values()))
+partitions = {"calibration": set(), "assessment": set()}
+for speakers in [sorted(group) for group in known_groups.values()] + [background]:
+    midpoint = len(speakers) // 2
+    partitions["calibration"].update(speakers[:midpoint])
+    partitions["assessment"].update(speakers[midpoint:])
+assert partitions["calibration"].isdisjoint(partitions["assessment"])
+split_for = {speaker: name for name, speakers in partitions.items() for speaker in speakers}
+required = {uid for template in enroll.values() for uid in template["ids"]}
+rows = []
+excluded = Counter()
+for line in (protocol / "ASVspoof2019.PA.asv.dev.gi.trl.txt").read_text().splitlines():
+    claim, uid, environment, attack, label = line.split()
+    assert uid not in required and claim in enroll and label in {"target", "nontarget", "spoof"}
+    if uid not in metadata:
+        excluded["missing_identity:" + label] += 1
+        continue
+    actual = metadata[uid]["speaker_id"]
+    speaker = enroll[claim]["speaker"]
+    if label == "target":
+        assert actual == speaker
+    if label == "nontarget":
+        assert actual != speaker
+    assert (metadata[uid]["label"].lower() == "spoof") == (label == "spoof")
+    split = split_for[speaker]
+    if split_for[actual] != split:
+        excluded["cross_partition:" + label] += 1
+        continue
+    rows.append(dict(split=split, claim=claim, claimed_speaker=speaker, actual_speaker=actual,
+                     uid=uid, environment=environment, attack=attack, label=label))
+assert rows
+assert not {r["uid"] for r in rows if r["split"] == "calibration"} & {r["uid"] for r in rows if r["split"] == "assessment"}
+counts = {}
+for split in partitions:
+    labels = Counter(r["label"] for r in rows if r["split"] == split)
+    counts[split] = dict(labels)
+    assert set(labels) == {"target", "nontarget", "spoof"}, (split, dict(labels))
+out = root / "reports" / ("pa_partition_" + os.environ["PBS_JOBID"])
+out.mkdir()
+with (out / "trials.csv").open("w", newline="") as stream:
+    writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+    writer.writeheader()
+    writer.writerows(rows)
+(out / "enrollment.json").write_text(json.dumps(enroll, indent=2))
+result = {"scope": "PA official development only. Split base speakers, including actual impostors, across all environments. No model fitting.",
+          "partitions": {name: sorted(values) for name, values in partitions.items()},
+          "included": counts, "excluded": dict(excluded)}
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

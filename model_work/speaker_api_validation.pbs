@@ -1,0 +1,55 @@
+#!/bin/bash
+#PBS -N vg_spkapi
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=8gb
+#PBS -l walltime=00:15:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/speaker_api_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -m pytest -q tests
+.venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+import pandas as pd
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+root = Path.cwd()
+prior = root / "reports/speaker_evaluation_46018.mgmt01"
+threshold = json.loads((prior / "results.json").read_text())["calibration_threshold"]
+trials = pd.read_csv(prior / "trials.csv")
+speaker = sorted(trials.loc[trials.split == "assessment", "claimed"].unique())[0]
+subset = trials[(trials.split == "assessment") & (trials.claimed == speaker)]
+sample = subset.groupby("target").head(2)
+assert len(sample) == 4 and sample.target.nunique() == 2
+base = root / "datasets/asvspoof2019/extracted/LA"
+protocol = base / "ASVspoof2019_LA_asv_protocols"
+references = []
+for path in protocol.glob("*dev*.trn.txt"):
+    for line in path.read_text().splitlines():
+        claimed, ids = line.split()
+        if claimed == speaker:
+            references.extend(ids.split(","))
+assert references and not set(references) & set(sample.uid)
+needed = set(references) | set(sample.uid)
+files = {p.stem: p for p in base.rglob("*.flac") if p.stem in needed}
+assert set(files) == needed
+out = root / "reports" / ("speaker_api_" + os.environ["PBS_JOBID"])
+out.mkdir()
+verifier = SpeakerVerifier.from_pretrained(root / "pretrained/speaker_assets", out / "model", threshold)
+template = verifier.enroll(load_audio(files[uid])[0] for uid in references)
+rows = []
+for row in sample.itertuples():
+    score = verifier.verify(load_audio(files[row.uid])[0], template)
+    assert abs(score["similarity"] - row.score) < 0.0001
+    assert score["matched"] == (row.score > threshold)
+    rows.append({"uid": row.uid, "target": row.target, **score})
+result = {"scope": "Four existing LA development trials. Confirms parity with the frozen prior evaluation, not new accuracy evidence.",
+          "enrollment_count": len(references), "trials": rows}
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

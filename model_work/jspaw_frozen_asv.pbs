@@ -1,0 +1,114 @@
+#!/bin/bash
+#PBS -N vg_jspaw_asv
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/jspaw_asv_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -u - <<'PY'
+import csv
+import hashlib
+import io
+import json
+import os
+import zipfile
+from collections import Counter
+from math import gcd
+from pathlib import Path, PurePosixPath
+
+import numpy as np
+import soundfile as sf
+import torch
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+torch.set_num_threads(4)
+root = Path("datasets/jspaw_interspeech")
+audit = json.loads(Path("reports/jspaw_audit_46561.mgmt01/summary.json").read_text())
+assert audit["revision"] == (root / "protocol_revision").read_text().strip()
+assert audit["tasks"]["ASV"]["rows"] == 37600
+threshold = json.loads(Path("reports/speaker_evaluation_46018.mgmt01/results.json").read_text())["calibration_threshold"]
+assert threshold == 0.4769288897514343
+assets = Path("pretrained/speaker_assets")
+assert hashlib.sha256((assets / "embedding_model.ckpt").read_bytes()).hexdigest() == "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2"
+out = Path("reports") / ("jspaw_asv_" + os.environ["PBS_JOBID"])
+out.mkdir()
+rows = []
+with zipfile.ZipFile(root / "jspaw.zip") as archive:
+    paths = {}
+    duplicates = set()
+    for name in archive.namelist():
+        path = PurePosixPath(name)
+        if path.parent.name == "ASV" and path.suffix.lower() == ".wav":
+            if path.stem in paths:
+                duplicates.add(path.stem)
+            paths[path.stem] = name
+    for line in (root / "ASV_trial.txt").read_text().splitlines():
+        if not line.strip():
+            continue
+        label, left, right = line.split()
+        a, b = PurePosixPath(left).stem, PurePosixPath(right).stem
+        assert label in {"0", "1"} and (a.split("_")[0] == b.split("_")[0]) == (label == "1")
+        cross_room = a.split("_")[1] != b.split("_")[1]
+        status = "eligible" if all(x in paths and x not in duplicates for x in (a, b)) else "missing_or_ambiguous"
+        rows.append([a, b, int(label), cross_room, status, None])
+    assert len(rows) == 37600
+    assert sum(row[4] == "eligible" for row in rows) == audit["tasks"]["ASV"]["matched"]
+    needed = {name for row in rows if row[4] == "eligible" for name in row[:2]}
+    verifier = SpeakerVerifier.from_pretrained(assets, out / "model", threshold)
+    embeddings, failures = {}, {}
+    for i, name in enumerate(sorted(needed), 1):
+        try:
+            samples, rate = sf.read(io.BytesIO(archive.read(paths[name])), dtype="float32", always_2d=True)
+            mono = samples.mean(axis=1)
+            if rate != 16000:
+                divisor = gcd(rate, 16000)
+                mono = resample_poly(mono, 16000 // divisor, rate // divisor)
+            embeddings[name] = verifier.embedding(mono)
+        except (ValueError, sf.LibsndfileError) as exc:
+            failures[name] = str(exc)
+        if i % 1000 == 0:
+            print("Audio files attempted:", i, "/", len(needed))
+for row in rows:
+    a, b = row[:2]
+    if row[4] == "eligible":
+        if a in embeddings and b in embeddings:
+            row[4] = "scored"
+            row[5] = float(np.clip(embeddings[a] @ embeddings[b], -1, 1))
+        else:
+            row[4] = "audio_failure"
+
+def summarize(group):
+    scored = [row for row in group if row[4] == "scored"]
+    result = {"counts": dict(Counter(row[4] for row in group)),
+              "coverage": len(scored) / len(group) if group else None}
+    labels = np.array([row[2] == 1 for row in scored], dtype=bool)
+    scores = np.array([row[5] for row in scored])
+    result.update(target=int(labels.sum()), nontarget=int((~labels).sum()))
+    if labels.any() and (~labels).any():
+        fpr, tpr, _ = roc_curve(labels, scores, drop_intermediate=False)
+        fnr = 1 - tpr
+        index = np.argmin(np.abs(fpr - fnr))
+        accept = scores > threshold
+        result.update(FAR=float(accept[~labels].mean()), FRR=float((~accept[labels]).mean()),
+                      EER=float((fpr[index] + fnr[index]) / 2), AUROC=float(roc_auc_score(labels, scores)))
+    return result
+
+with (out / "trials.csv").open("w", newline="") as handle:
+    writer = csv.writer(handle)
+    writer.writerow(["enrollment", "probe", "target", "cross_room", "status", "cosine"])
+    writer.writerows(rows)
+summary = {"threshold": threshold, "audit_job": "46561.mgmt01",
+           "protocol_revision": audit["revision"],
+           "archive_sha256": (root / "jspaw.zip.sha256").read_text().split()[0],
+           "scope": "Frozen external ASV benchmark. Capture-session separation and pretraining identity overlap unverified.",
+           "unique_audio_required": len(needed), "unique_audio_scored": len(embeddings),
+           "audio_failures": failures, "overall": summarize(rows),
+           "cross_room": summarize([row for row in rows if row[3]])}
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

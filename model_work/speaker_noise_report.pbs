@@ -1,0 +1,38 @@
+#!/bin/bash
+#PBS -N vg_spkreport
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=2gb
+#PBS -l walltime=00:05:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/speaker_noise_report_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+import pandas as pd
+
+path = Path("reports") / ("speaker_noise_" + os.environ["NOISE_JOB"])
+trials = pd.read_csv(path / "paired_trials.csv")
+keys = ["uid", "claimed", "target"]
+assert set(trials.condition) == {"clean", "snr20", "snr10"}
+assert len(trials) == 600 and not trials.duplicated(keys + ["condition"]).any()
+paired = trials.pivot(index=keys, columns="condition", values="accepted")
+assert len(paired) == 200 and not paired.isna().any().any()
+target = paired.index.get_level_values("target") == 1
+summary = {"source_job": os.environ["NOISE_JOB"],
+           "scope": "Frozen-threshold paired development stress test with synthetic additive noise and five enrolled identities.",
+           "conditions": {}}
+for name in paired.columns:
+    flags = paired[name]
+    summary["conditions"][name] = {
+        "target_trials": int(target.sum()),
+        "impostor_trials": int((~target).sum()),
+        "false_nonmatches": int((~flags[target]).sum()),
+        "false_matches": int(flags[~target].sum()),
+        "new_false_nonmatches": int((paired.clean[target] & ~flags[target]).sum()),
+    }
+(path / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

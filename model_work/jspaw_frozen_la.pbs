@@ -1,0 +1,97 @@
+#!/bin/bash
+#PBS -N vg_jspaw_la
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/jspaw_la_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -u - <<'PY'
+import hashlib
+import io
+import json
+import os
+import zipfile
+from collections import defaultdict
+from math import gcd
+from pathlib import Path, PurePosixPath
+
+import numpy as np
+import soundfile as sf
+import torch
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.inference import Detector, VoicegaurdInference
+
+root = Path("datasets/jspaw_interspeech")
+revision = (root / "protocol_revision").read_text().strip()
+assert revision == "074f4884e06b523087775e503dea07d8ec3c8154"
+threshold = 0.0061066979542373995
+checkpoint = Path("checkpoints/v3_wavlm_attn_20_fixed/best.pt")
+digest = hashlib.sha256()
+with checkpoint.open("rb") as handle:
+    for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+        digest.update(block)
+assert digest.hexdigest() == "5600846905b143a476ec83cd805b44536fae166102fe015ea3ed2b84e026a57b"
+torch.set_num_threads(4)
+engine = VoicegaurdInference({"synthetic": Detector(checkpoint)})
+out = Path("reports") / ("jspaw_la_" + os.environ["PBS_JOBID"])
+out.mkdir()
+protocol = [line.split() for line in (root / "metadata_LA.txt").read_text().splitlines() if line.strip()]
+assert len(protocol) == 2400 and len({row[1] for row in protocol}) == 2400
+rows = []
+with zipfile.ZipFile(root / "jspaw.zip") as archive, (out / "scores.jsonl").open("w") as scores:
+    paths = defaultdict(list)
+    for name in archive.namelist():
+        path = PurePosixPath(name)
+        if path.suffix.lower() == ".wav":
+            paths[path.parent.name, path.stem].append(name)
+    for i, (speaker, uid, _, environment, method, label, _, _) in enumerate(protocol, 1):
+        assert label in {"spoof", "bonafide"}
+        candidates = paths["ASV" if label == "bonafide" else "LA", uid]
+        assert len(candidates) == 1
+        try:
+            audio, rate = sf.read(io.BytesIO(archive.read(candidates[0])), dtype="float32", always_2d=True)
+            mono = audio.mean(axis=1)
+            if rate != 16000:
+                divisor = gcd(rate, 16000)
+                mono = resample_poly(mono, 16000 // divisor, rate // divisor)
+            evidence = engine.analyze_samples(mono)["evidence"]["synthetic"]
+        except (sf.LibsndfileError, ValueError) as exc:
+            evidence = {"score": None, "status": "audio_failure", "error": str(exc)}
+        row = dict(uid=uid, speaker=speaker, environment=environment, method=method,
+                   label=label, status=evidence.get("status", "scored"), score=evidence["score"])
+        scores.write(json.dumps(row) + "\n")
+        rows.append(row)
+        if i % 100 == 0:
+            scores.flush()
+            print("Processed", i, "/", len(protocol))
+
+def summarize(group):
+    result = {}
+    for label in ("bonafide", "spoof"):
+        subset = [row for row in group if row["label"] == label]
+        scored = [row["score"] for row in subset if row["score"] is not None]
+        flags = sum(value > threshold for value in scored)
+        result[label] = dict(total=len(subset), scored=len(scored), abstained=len(subset)-len(scored),
+                             flagged=flags, flag_rate_among_scored=flags/len(scored) if scored else None)
+    scored = [row for row in group if row["score"] is not None]
+    labels = np.array([row["label"] == "spoof" for row in scored])
+    values = np.array([row["score"] for row in scored])
+    if len(labels) and labels.any() and (~labels).any():
+        fpr, tpr, _ = roc_curve(labels, values, drop_intermediate=False)
+        fnr = 1 - tpr
+        idx = np.argmin(np.abs(fpr - fnr))
+        result.update(AUROC=float(roc_auc_score(labels, values)), EER=float((fpr[idx]+fnr[idx])/2))
+    return result
+
+summary = dict(scope="Frozen J-SpAW LA benchmark, centered full windows only. Short files abstain.",
+               threshold=threshold, protocol_revision=revision, checkpoint_sha256=digest.hexdigest(),
+               overall=summarize(rows),
+               by_environment={env:summarize([row for row in rows if row["environment"] == env])
+                               for env in sorted({row["environment"] for row in rows})})
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

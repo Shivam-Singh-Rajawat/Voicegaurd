@@ -1,0 +1,95 @@
+#!/bin/bash
+#PBS -N vg_cndev1
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/cnceleb_dev_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import hashlib
+import json
+import os
+from math import gcd
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score
+import soundfile as sf
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+stage = Path("datasets/cnceleb1_official/speaker_dev_v1")
+manifest = stage / "speaker_dev_v1.csv"
+assert hashlib.sha256(manifest.read_bytes()).hexdigest() == "0560d1d4c0eb8df284dadbf0922d2226cfa070c2c855293d6515573b228c2d0e"
+plan = pd.read_csv(manifest)
+assert plan.speaker.is_unique and plan.split.value_counts().to_dict() == {"calibration": 40, "validation": 40}
+frozen = 0.4769288897514343
+out = Path("reports") / ("cnceleb_dev_" + os.environ["PBS_JOBID"])
+out.mkdir()
+verifier = SpeakerVerifier.from_pretrained(Path("pretrained/speaker_assets"), out / "model", frozen)
+
+def encode(relative):
+    with sf.SoundFile(str(stage / relative)) as stream:
+        rate = stream.samplerate
+        audio = stream.read(rate * 7, dtype="float32", always_2d=True).mean(axis=1)
+    factor = gcd(rate, 16000)
+    if rate != 16000:
+        audio = resample_poly(audio, 16000 // factor, rate // factor)
+    return verifier.embedding(audio) if np.any(audio) else None
+
+def genre(path):
+    return Path(path).stem.rsplit("-", 2)[0]
+
+def score(probe, reference):
+    return float(np.clip(probe @ reference, -1, 1)) if probe is not None and reference is not None else None
+
+records = []
+for split, group in plan.groupby("split"):
+    rows = list(group.itertuples(index=False))
+    vectors = {path: encode(path) for row in rows for path in (row.reference_a, row.reference_b, row.probe)}
+    for claim in rows:
+        a, b = vectors[claim.reference_a], vectors[claim.reference_b]
+        combined = None
+        if a is not None and b is not None:
+            norm = np.linalg.norm(a + b)
+            if norm > 0:
+                combined = (a + b) / norm
+        for probe in rows:
+            records.append(dict(split=split, claim=claim.speaker, actual=probe.speaker,
+                                target=claim.speaker == probe.speaker, genre=probe.probe_genre,
+                                same_genre=genre(claim.reference_a) == probe.probe_genre,
+                                single=score(vectors[probe.probe], a),
+                                two=score(vectors[probe.probe], combined)))
+frame = pd.DataFrame(records)
+frame.to_csv(out / "scores.csv", index=False)
+
+def metrics(rows, method, cutoff):
+    valid = rows.dropna(subset=[method])
+    targets = valid[valid.target]
+    impostors = valid[~valid.target]
+    return dict(planned=len(rows), targets=len(targets), impostors=len(impostors),
+                abstained=len(rows) - len(valid),
+                false_rejects=int((targets[method] <= cutoff).sum()),
+                false_accepts=int((impostors[method] > cutoff).sum()),
+                auc=float(roc_auc_score(valid.target, valid[method])) if len(targets) and len(impostors) else None)
+
+cal = frame[frame.split == "calibration"]
+val = frame[frame.split == "validation"]
+summary = {"frozen_cutoff": frozen, "calibration_target_far": 0.01, "methods": {}}
+for method in ("single", "two"):
+    impostors = cal.loc[~cal.target, method].dropna().sort_values(ascending=False)
+    cutoff = float(impostors.iloc[int(0.01 * len(impostors))])
+    summary["methods"][method] = {
+        "candidate_cutoff": cutoff, "frozen_validation": metrics(val, method, frozen),
+        "candidate_calibration": metrics(cal, method, cutoff),
+        "candidate_validation": metrics(val, method, cutoff),
+        "frozen_by_probe_genre": {name: metrics(group, method, frozen) for name, group in val.groupby("genre")},
+        "frozen_by_first_reference_genre_match": {str(name): metrics(group, method, frozen)
+                                                  for name, group in val.groupby("same_genre")},
+    }
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+PY

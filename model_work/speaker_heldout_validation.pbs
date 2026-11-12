@@ -1,0 +1,112 @@
+#!/bin/bash
+#PBS -N vg_spkhold
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:40:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/speaker_heldout_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+from collections import Counter
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+root = Path.cwd()
+reports = root / "reports"
+prior_path = reports / "speaker_evaluation_46018.mgmt01/results.json"
+prior = json.loads(prior_path.read_text())
+threshold = prior["calibration_threshold"]
+assert threshold == 0.4769288897514343
+development = set().union(*(set(ids) for ids in prior["partitions"].values()))
+base = root / "datasets/asvspoof2019/extracted/LA"
+protocol = base / "ASVspoof2019_LA_asv_protocols"
+enrollment = {}
+for path in sorted(protocol.glob("*eval*.trn.txt")):
+    for line in path.read_text().splitlines():
+        speaker, ids = line.split()
+        assert speaker not in enrollment
+        enrollment[speaker] = ids.split(",")
+assert enrollment and set(enrollment).isdisjoint(development)
+reference_ids = {uid for ids in enrollment.values() for uid in ids}
+manifest = pd.read_csv(root / "manifests/asv2019_la_eval.csv").set_index("audio_id", verify_integrity=True)
+trial_path = protocol / "ASVspoof2019.LA.asv.eval.gi.trl.txt"
+rows = []
+excluded = Counter()
+for line in trial_path.read_text().splitlines():
+    claimed, uid, kind, label = line.split()
+    assert claimed in enrollment and uid not in reference_ids
+    if label == "spoof":
+        excluded["spoof_out_of_scope"] += 1
+        continue
+    assert label in {"target", "nontarget"} and kind == "bonafide"
+    if uid not in manifest.index or pd.isna(manifest.at[uid, "speaker_id"]):
+        excluded["unknown_actual_identity:" + label] += 1
+        continue
+    actual = manifest.at[uid, "speaker_id"]
+    assert actual not in development
+    assert (actual == claimed) == (label == "target")
+    assert manifest.at[uid, "label"].lower() == "bonafide"
+    rows.append(dict(claimed=claimed, actual=actual, uid=uid, label=label))
+trials = pd.DataFrame(rows)
+assert set(trials.label) == {"target", "nontarget"}
+assert not trials.duplicated(["claimed", "uid"]).any()
+sample = pd.concat([group.sort_values("uid").sample(n=min(12, len(group)), random_state=20261109)
+                    for _, group in trials.groupby(["claimed", "label"])], ignore_index=True)
+assert set(sample.label) == {"target", "nontarget"}
+required = {uid for claim in sample.claimed.unique() for uid in enrollment[claim]}
+available = {p.stem: p for p in (base / "ASVspoof2019_LA_eval").rglob("*.flac") if p.stem in required}
+assert available.keys() == required
+out = reports / ("speaker_heldout_" + os.environ["PBS_JOBID"])
+out.mkdir()
+sample.to_csv(out / "planned_trials.csv", index=False)
+verifier = SpeakerVerifier.from_pretrained(root / "pretrained/speaker_assets", out / "model", threshold)
+templates = {speaker: verifier.enroll(load_audio(available[uid])[0] for uid in enrollment[speaker])
+             for speaker in sample.claimed.unique()}
+scores = []
+for index, (uid, group) in enumerate(sample.groupby("uid"), 1):
+    audio, _ = load_audio(manifest.at[uid, "audio_path"])
+    vector = verifier.embedding(audio) if np.any(audio) else None
+    for row in group.to_dict("records"):
+        cosine = float(np.clip(vector @ templates[row["claimed"]], -1, 1)) if vector is not None else None
+        row.update(score=cosine, accepted=(cosine > threshold) if cosine is not None else None)
+        scores.append(row)
+    if index % 100 == 0:
+        print("Processed", index, flush=True)
+frame = pd.DataFrame(scores)
+frame.to_csv(out / "trial_scores.csv", index=False)
+eligible = frame.dropna(subset=["score"])
+target = eligible.label == "target"
+fpr, tpr, _ = roc_curve(target, eligible.score)
+index = np.argmin(np.abs(fpr - (1 - tpr)))
+metrics = {}
+for label, group in frame.groupby("label"):
+    usable = group.score.notna()
+    metrics[label] = {"planned": len(group), "scored": int(usable.sum()),
+                      "abstained": int((~usable).sum()),
+                      "accepted": int((group.score > threshold).sum())}
+eligible.assign(accepted=eligible.score > threshold).groupby(["claimed", "label"]).accepted.agg(
+    ["size", "sum"]).to_csv(out / "speaker_counts.csv")
+result = {
+    "scope": "Frozen speaker threshold from LA development, evaluated once on a deterministic ASVspoof LA evaluation genuine/impostor subset disjoint from development identities. Corpus-controlled evaluation, not an ECAPA pretraining identity audit, natural telephony study or spoof claim.",
+    "protocol_sha256": hashlib.sha256(trial_path.read_bytes()).hexdigest(),
+    "calibration_sha256": hashlib.sha256(prior_path.read_bytes()).hexdigest(),
+    "threshold": threshold, "enrolled_speakers": len(templates),
+    "reference_recordings": len(required), "excluded_protocol_rows": dict(excluded),
+    "counts": metrics, "auc": float(roc_auc_score(target, eligible.score)),
+    "eer_percent": float((fpr[index] + 1 - tpr[index]) * 50),
+    "far_among_scored": float((eligible.loc[~target, "score"] > threshold).mean()),
+    "frr_among_scored": float((eligible.loc[target, "score"] <= threshold).mean()),
+}
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

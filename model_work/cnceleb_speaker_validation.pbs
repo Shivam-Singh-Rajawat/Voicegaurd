@@ -1,0 +1,90 @@
+#!/bin/bash
+#PBS -N vg_cnspkv1
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/cnceleb_speaker_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import soundfile as sf
+from math import gcd
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+reports = Path("reports")
+stage = Path("datasets/cnceleb1_official/session_disjoint_v1")
+manifest = stage / "session_disjoint_v1.csv"
+assert hashlib.sha256(manifest.read_bytes()).hexdigest() == "df6324bcf1787878dd416c178a36564098ba207f2b620d9e3b61789d2dc264ad"
+threshold = json.loads((reports / "speaker_evaluation_46018.mgmt01/results.json").read_text())["calibration_threshold"]
+assert threshold == 0.4769288897514343
+frame = pd.read_csv(manifest)
+assert frame.target.value_counts().to_dict() == {0: 1817, 1: 1817}
+out = reports / ("cnceleb_speaker_" + os.environ["PBS_JOBID"])
+out.mkdir()
+verifier = SpeakerVerifier.from_pretrained(Path("pretrained/speaker_assets"), out / "model", threshold)
+audio_root = stage / "CN-Celeb_flac/eval"
+
+def embedding(relative):
+    path = audio_root / relative
+    info = sf.info(str(path))
+    if info.duration > 120:
+        # The ECAPA adapter uses only the first six seconds.
+        audio, rate = sf.read(str(path), frames=info.samplerate * 7,
+                              dtype="float32", always_2d=True)
+        samples = audio.mean(axis=1)
+        if rate != 16000:
+            factor = gcd(rate, 16000)
+            samples = resample_poly(samples, 16000 // factor, rate // factor)
+        print("Bounded decode for long recording", relative, flush=True)
+    else:
+        samples, _ = load_audio(path)
+    return verifier.embedding(samples) if np.any(samples) else None
+
+enrollment = {path: embedding(path) for path in frame.enrollment.unique()}
+frame["score"] = np.nan
+for index, (path, rows) in enumerate(frame.groupby("probe"), 1):
+    vector = embedding(path)
+    if vector is not None:
+        for row in rows.itertuples():
+            reference = enrollment[row.enrollment]
+            if reference is not None:
+                frame.at[row.Index, "score"] = float(np.clip(vector @ reference, -1, 1))
+    if index % 100 == 0:
+        print("Processed probes", index, flush=True)
+frame.to_csv(out / "trial_scores.csv", index=False)
+
+def metrics(group):
+    valid = group.dropna(subset=["score"])
+    target = valid[valid.target == 1]
+    impostor = valid[valid.target == 0]
+    result = {"planned": len(group), "scored": len(valid), "abstained": len(group) - len(valid),
+              "targets_scored": len(target), "impostors_scored": len(impostor),
+              "false_rejects": int((target.score <= threshold).sum()),
+              "false_accepts": int((impostor.score > threshold).sum())}
+    result["frr"] = result["false_rejects"] / len(target) if len(target) else None
+    result["far"] = result["false_accepts"] / len(impostor) if len(impostor) else None
+    if len(target) and len(impostor):
+        fpr, tpr, _ = roc_curve(valid.target, valid.score)
+        fnr = 1 - tpr
+        i = np.argmin(np.abs(fpr - fnr))
+        result["eer_percent"] = float(50 * (fpr[i] + fnr[i]))
+        result["auc"] = float(roc_auc_score(valid.target, valid.score))
+    return result
+
+summary = {"scope": "CN-Celeb1 selected in-the-wild genre/session cohort",
+           "threshold": threshold, "overall": metrics(frame),
+           "by_genre": {genre: metrics(rows) for genre, rows in frame.groupby("genre")}}
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+PY

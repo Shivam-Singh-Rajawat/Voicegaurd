@@ -1,0 +1,16 @@
+#!/bin/bash
+#PBS -N vg_cnfull
+#PBS -q workq
+#PBS -J 0-11%3
+#PBS -l select=1:ncpus=4:mem=8gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+stage=datasets/cnceleb1_official/speaker_dev_full_v1
+out="reports/cnceleb_full_${PBS_JOBID}"
+exec > "logs/cnceleb_full_${PBS_JOBID}.log" 2>&1
+.venv/bin/python "$stage/encode_cnceleb_full_development.py" \
+    "$stage/speaker_dev_full_v1.csv" "$stage" pretrained/speaker_assets \
+    "$out" "$PBS_ARRAY_INDEX" 12

@@ -1,0 +1,74 @@
+#!/bin/bash
+#PBS -N vg_codecfake
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:40:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/codecfake_frozen_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+from pathlib import Path
+import hashlib
+import json
+import os
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.inference import Detector, VoicegaurdInference
+
+root = Path.cwd()
+reports = root / "reports"
+assert (reports / "speaker_noise_46061.mgmt01/summary.json").is_file()
+source = reports / "dataset_readiness/CODECFAKE_COSG_PROTOCOL_MATCHED.csv"
+files = pd.read_csv(source)
+assert files.path.is_unique and files.label.value_counts().to_dict() == {"spoof": 931, "bonafide": 866}
+training = pd.read_csv(root / "manifests/voicegaurd_v2_la_asv5_train.csv", usecols=["audio_path"])
+assert set(files.path).isdisjoint(training.audio_path)
+cal = pd.read_csv(reports / "temperature_calibration_46013.mgmt01/development_comparison.csv")
+threshold = float(cal.loc[(cal.domain == "la") & (cal.method == "raw"), "calibration_threshold"].item())
+checkpoint = root / "checkpoints/v3_wavlm_attn_20_fixed/best.pt"
+engine = VoicegaurdInference({"synthetic": Detector(checkpoint)})
+out = reports / ("codecfake_frozen_" + os.environ["PBS_JOBID"])
+out.mkdir()
+rows = []
+with (out / "scores.jsonl").open("w") as log:
+    for index, record in enumerate(files.itertuples(), 1):
+        result = engine.analyze(record.path)["evidence"]["synthetic"]
+        row = dict(path=record.path, label=record.label, attack=record.attack_id,
+                   status=result.get("status", "scored"), score=result["score"])
+        rows.append(row)
+        log.write(json.dumps(row) + "\n")
+        if index % 100 == 0:
+            log.flush()
+            print("Processed", index, flush=True)
+
+scores = pd.DataFrame(rows)
+valid = scores[scores.score.notna()]
+metrics = {}
+for label, group in scores.groupby("label"):
+    scored = group.score.notna()
+    metrics[label] = dict(total=len(group), scored=int(scored.sum()),
+                          abstained=int((~scored).sum()),
+                          flagged=int((group.score > threshold).sum()),
+                          flag_rate_among_scored=float((group.loc[scored, "score"] > threshold).mean()) if scored.any() else None)
+rank = None
+if valid.label.nunique() == 2:
+    truth = valid.label == "spoof"
+    fpr, tpr, _ = roc_curve(truth, valid.score)
+    fnr = 1 - tpr
+    index = np.argmin(abs(fpr - fnr))
+    rank = dict(auc=float(roc_auc_score(truth, valid.score)), eer_percent=float((fpr[index] + fnr[index]) * 50))
+scores.groupby(["label", "attack"], dropna=False).agg(
+    samples=("score", "size"), scored=("score", "count"),
+    flagged=("score", lambda s: int((s > threshold).sum()))
+).to_csv(out / "by_protocol_group.csv")
+summary = {"scope": "Frozen-threshold external corpus check with supplied CoSG labels. No overlap by path with the checked combined training manifest. Exact content/near-duplicate separation and official split remain unverified. Metrics on scored files are conditional on coverage.",
+           "threshold": threshold, "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+           "manifest_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+           "metrics": metrics, "rank_on_scored_files": rank}
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

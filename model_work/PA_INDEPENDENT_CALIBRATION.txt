@@ -1,0 +1,43 @@
+ASVspoof2019 PA independent assessment. See audit_pa_independent.py.
+Columns after count are raw/candidate log loss and raw/candidate Brier.
+Detection and false-alarm counts use the original raw-score cutoff.
+Frozen candidate {"slope": 0.8666838167854221, "intercept": 1.0071789250607466}
+Score SHA256 c1d203be2e8d27b9519d055f8c206e3973281d468df6bae0282444198cb0e49f
+overall 134730 0.221193 0.155746 0.070558 0.048964 false_alarms 278 18090 detected 90653 116640
+condition=aaa 4990 0.376758 0.231752 0.123626 0.076985 false_alarms 2 670 detected 2743 4320
+condition=aab 4990 0.182285 0.13273 0.059003 0.040973 false_alarms 7 670 detected 3312 4320
+condition=aac 4990 0.126683 0.122441 0.038771 0.037006 false_alarms 10 670 detected 3607 4320
+condition=aba 4990 0.332462 0.204166 0.100601 0.064179 false_alarms 4 670 detected 3008 4320
+condition=abb 4990 0.181089 0.137518 0.053918 0.042024 false_alarms 9 670 detected 3548 4320
+condition=abc 4990 0.145897 0.12036 0.043628 0.036026 false_alarms 14 670 detected 3675 4320
+condition=aca 4990 0.173637 0.141589 0.049433 0.042002 false_alarms 21 670 detected 3766 4320
+condition=acb 4990 0.077668 0.095297 0.02227 0.028656 false_alarms 13 670 detected 4125 4320
+condition=acc 4990 0.10684 0.137342 0.025357 0.035405 false_alarms 57 670 detected 4246 4320
+condition=baa 4990 0.282485 0.193852 0.094605 0.062912 false_alarms 15 670 detected 3113 4320
+condition=bab 4990 0.268173 0.175662 0.089241 0.05655 false_alarms 5 670 detected 3041 4320
+condition=bac 4990 0.165983 0.139869 0.052942 0.042601 false_alarms 9 670 detected 3437 4320
+condition=bba 4990 0.29685 0.177667 0.095743 0.059036 false_alarms 1 670 detected 3125 4320
+condition=bbb 4990 0.245641 0.154304 0.078949 0.0485 false_alarms 4 670 detected 3168 4320
+condition=bbc 4990 0.148552 0.113728 0.047265 0.033519 false_alarms 18 670 detected 3529 4320
+condition=bca 4990 0.227366 0.148307 0.072152 0.045673 false_alarms 9 670 detected 3249 4320
+condition=bcb 4990 0.115942 0.088796 0.03646 0.026327 false_alarms 6 670 detected 3676 4320
+condition=bcc 4990 0.090268 0.101038 0.026767 0.030202 false_alarms 20 670 detected 4012 4320
+condition=caa 4990 0.331533 0.22018 0.11195 0.073754 false_alarms 5 670 detected 2931 4320
+condition=cab 4990 0.271697 0.184996 0.091071 0.059537 false_alarms 3 670 detected 3019 4320
+condition=cac 4990 0.272611 0.187134 0.091233 0.059897 false_alarms 5 670 detected 3030 4320
+condition=cba 4990 0.39695 0.237833 0.127713 0.080907 false_alarms 1 670 detected 2927 4320
+condition=cbb 4990 0.226598 0.149118 0.072677 0.047204 false_alarms 4 670 detected 3302 4320
+condition=cbc 4990 0.235888 0.155724 0.07733 0.0497 false_alarms 10 670 detected 3302 4320
+condition=cca 4990 0.295501 0.177309 0.095893 0.057737 false_alarms 1 670 detected 3044 4320
+condition=ccb 4990 0.191785 0.126752 0.061429 0.039364 false_alarms 4 670 detected 3371 4320
+condition=ccc 4990 0.205065 0.14967 0.065047 0.045351 false_alarms 21 670 detected 3347 4320
+attack_id=- 18090 0.230567 0.41893 0.061969 0.125429 false_alarms 278 18090 detected 0 0
+attack_id=AA 16932 0.611858 0.329024 0.19926 0.112547 false_alarms 0 0 detected 8833 16932
+attack_id=AB 16932 0.342637 0.176652 0.114402 0.056576 false_alarms 0 0 detected 10878 16932
+attack_id=AC 16932 0.019536 0.009995 0.005392 0.002199 false_alarms 0 0 detected 16305 16932
+attack_id=BA 8136 0.342907 0.178936 0.113542 0.058914 false_alarms 0 0 detected 5399 8136
+attack_id=BB 8136 0.206356 0.104923 0.067881 0.03194 false_alarms 0 0 detected 6042 8136
+attack_id=BC 8136 0.013988 0.007155 0.003737 0.001516 false_alarms 0 0 detected 7905 8136
+attack_id=CA 13812 0.193946 0.098243 0.064311 0.029959 false_alarms 0 0 detected 10498 13812
+attack_id=CB 13812 0.127071 0.06424 0.04034 0.018118 false_alarms 0 0 detected 11259 13812
+attack_id=CC 13812 0.008803 0.004484 0.002258 0.000834 false_alarms 0 0 detected 13534 13812

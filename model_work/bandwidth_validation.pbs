@@ -1,0 +1,87 @@
+#!/bin/bash
+#PBS -N vg_bandwidth
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:25:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/bandwidth_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+import numpy as np
+import pandas as pd
+import soundfile as sf
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.inference import Detector, VoicegaurdInference, fixed_window
+
+root = Path.cwd()
+reports = root / "reports"
+assert json.loads((reports / "multievidence_46071.mgmt01/summary.json").read_text())["common_interface_parity"]
+la_cal = pd.read_csv(reports / "temperature_calibration_46013.mgmt01/development_comparison.csv")
+thresholds = {
+    "synthetic": float(la_cal.loc[(la_cal.domain == "la") & (la_cal.method == "raw"), "calibration_threshold"].item()),
+    "replay": json.loads((reports / "v3_pa_auto/selected_model.json").read_text())["frozen_threshold"],
+}
+la = pd.read_csv(root / "manifests/v3/la_select.csv")
+pa = pd.read_csv(root / "manifests/asv2019_pa_dev.csv").rename(columns={"audio_path": "path"})
+pa["label"] = pa.label.str.lower().map({"bonafide": 0, "spoof": 1})
+assert pa.label.notna().all()
+cases = [
+    ("synthetic", la, "checkpoints/v3_wavlm_attn_20_fixed/best.pt"),
+    ("replay", pa, "checkpoints/v3_pa_wavlm/best.pt"),
+]
+out = reports / ("bandwidth_" + os.environ["PBS_JOBID"])
+out.mkdir()
+rows = []
+with TemporaryDirectory(prefix="voicegaurd-bandwidth-") as temporary:
+    path = Path(temporary) / "window.wav"
+    for name, files, checkpoint in cases:
+        detector = Detector(root / checkpoint)
+        engine = VoicegaurdInference({name: detector})
+        size = round(detector.seconds * 16000)
+        for label, group in files.groupby("label"):
+            accepted = 0
+            for record in group.sample(frac=1, random_state=20261109).itertuples():
+                audio, _ = load_audio(record.path)
+                if audio.size < size:
+                    continue
+                clip = fixed_window(audio, size)
+                for rate, signal in [(16000, clip), (8000, resample_poly(clip, 1, 2))]:
+                    sf.write(path, signal, rate, subtype="PCM_16")
+                    decoded, _ = load_audio(path)
+                    assert decoded.shape == clip.shape and np.isfinite(decoded).all()
+                    score = engine.analyze_samples(decoded)["evidence"][name]["score"]
+                    assert score is not None
+                    rows.append(dict(model=name, path=record.path, label=int(label), rate=rate, score=score))
+                accepted += 1
+                if accepted == 30:
+                    break
+            assert accepted == 30
+        for rate in (8000, 16000):
+            sf.write(path, np.full(rate * 2, 0.01), rate, subtype="PCM_16")
+            short = engine.analyze(path)["evidence"][name]
+            assert short["status"] == "insufficient_audio" and short["score"] is None
+        print("Completed", name, flush=True)
+scores = pd.DataFrame(rows)
+scores.to_csv(out / "paired_scores.csv", index=False)
+summary = []
+for (model, rate), frame in scores.groupby(["model", "rate"]):
+    threshold = thresholds[model]
+    fpr, tpr, _ = roc_curve(frame.label, frame.score)
+    index = np.argmin(np.abs(fpr - (1 - tpr)))
+    summary.append(dict(model=model, sample_rate_hz=int(rate), files=len(frame), threshold=threshold,
+        auc=float(roc_auc_score(frame.label, frame.score)), eer_percent=float((fpr[index] + 1 - tpr[index]) * 50),
+        false_flags=int(((frame.score > threshold) & (frame.label == 0)).sum()),
+        detected=int(((frame.score > threshold) & (frame.label == 1)).sum())))
+result = {"scope": "Paired development clips. 8 kHz simulated with band-limited resampling and PCM16. No telephony codec, transport, threshold refit, or independent evaluation.", "results": summary}
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

@@ -1,0 +1,82 @@
+#!/bin/bash
+#PBS -N vg_spknoise
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:20:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/speaker_noise_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import torch
+from speechbrain.inference.speaker import EncoderClassifier
+from voicegaurd_runtime.audio import load_audio
+
+root = Path.cwd()
+reports = root / "reports"
+prior = reports / "speaker_evaluation_46018.mgmt01"
+threshold = json.loads((prior / "results.json").read_text())["calibration_threshold"]
+trials = pd.read_csv(prior / "trials.csv")
+groups = trials[trials.split == "assessment"].groupby(["claimed", "target"])
+sample = pd.concat([group.sample(n=min(20, len(group)), random_state=20261109)
+                    for _, group in groups], ignore_index=True)
+assert len(sample) == 200 and sample.claimed.nunique() == 5
+base = root / "datasets/asvspoof2019/extracted/LA"
+protocol = base / "ASVspoof2019_LA_asv_protocols"
+enrollment = {}
+for path in protocol.glob("*dev*.trn.txt"):
+    for line in path.read_text().splitlines():
+        speaker, ids = line.split()
+        enrollment[speaker] = ids.split(",")
+assert not set(sample.uid) & {uid for ids in enrollment.values() for uid in ids}
+with np.load(prior / "embeddings.npz") as cache:
+    templates = {speaker: torch.nn.functional.normalize(
+        torch.stack([torch.from_numpy(cache[uid]) for uid in enrollment[speaker]]).mean(0), dim=0
+    ) for speaker in sample.claimed.unique()}
+manifest = pd.read_csv(root / "manifests/asv2019_la_dev.csv")
+paths = {Path(row.audio_path).stem: row.audio_path for row in manifest.itertuples()
+         if str(row.label).lower() == "bonafide"}
+assert set(sample.uid) <= paths.keys()
+out = reports / ("speaker_noise_" + os.environ["PBS_JOBID"])
+out.mkdir()
+assets = root / "pretrained/speaker_assets"
+model = EncoderClassifier.from_hparams(source=str(assets), savedir=str(out / "model"),
+    overrides={"pretrained_path": str(assets)}, run_opts={"device": "cpu"})
+
+def embedding(samples):
+    z = model.encode_batch(torch.from_numpy(samples).unsqueeze(0)).detach().reshape(-1)
+    assert z.numel() == 192 and torch.isfinite(z).all()
+    return torch.nn.functional.normalize(z, dim=0)
+
+rows = []
+for index, (uid, trials) in enumerate(sample.groupby("uid"), 1):
+    samples, _ = load_audio(paths[uid])
+    clean = samples[:96000]
+    rms = float(np.sqrt(np.mean(clean * clean)))
+    assert rms > 0
+    seed = int.from_bytes(hashlib.sha256(uid.encode()).digest()[:8], "little")
+    noise = np.random.default_rng(seed).standard_normal(clean.size).astype(np.float32)
+    noise /= np.sqrt(np.mean(noise * noise))
+    conditions = {"clean": clean, "snr20": clean + noise * (rms * 10**-1),
+                  "snr10": clean + noise * (rms * 10**-0.5)}
+    for condition, audio in conditions.items():
+        vector = embedding(audio)
+        for row in trials.itertuples():
+            score = float(templates[row.claimed] @ vector)
+            if condition == "clean":
+                assert abs(score - row.score) < 0.0001
+            rows.append(dict(uid=uid, claimed=row.claimed, target=row.target,
+                             condition=condition, score=score, accepted=score > threshold))
+    if index % 40 == 0:
+        print("Processed", index, flush=True)
+pd.DataFrame(rows).to_csv(out / "paired_trials.csv", index=False)
+print("Completed", len(rows), "trial-condition rows at frozen threshold", threshold)
+PY

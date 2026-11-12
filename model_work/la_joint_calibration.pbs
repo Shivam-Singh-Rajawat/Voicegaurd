@@ -1,0 +1,117 @@
+#!/bin/bash
+#PBS -N vg_lajoint
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:40:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/la_joint_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.inference import Detector, fixed_window
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+root = Path.cwd()
+reports = root / "reports"
+prior = json.loads((reports / "speaker_evaluation_46018.mgmt01/results.json").read_text())
+parts = {key: set(values) for key, values in prior["partitions"].items()}
+assert parts["calibration"].isdisjoint(parts["assessment"])
+base = root / "datasets/asvspoof2019/extracted/LA"
+protocol = base / "ASVspoof2019_LA_asv_protocols"
+enroll = {}
+for file in protocol.glob("*dev*.trn.txt"):
+    for line in file.read_text().splitlines():
+        speaker, ids = line.split()
+        assert speaker not in enroll
+        enroll[speaker] = ids.split(",")
+reference_ids = {uid for ids in enroll.values() for uid in ids}
+manifest = pd.read_csv(root / "manifests/asv2019_la_dev.csv").set_index("audio_id", verify_integrity=True)
+rows = []
+for line in (protocol / "ASVspoof2019.LA.asv.dev.gi.trl.txt").read_text().splitlines():
+    claimed, uid, attack, label = line.split()
+    assert uid not in reference_ids
+    if uid not in manifest.index:
+        continue
+    actual = manifest.at[uid, "speaker_id"]
+    for split, speakers in parts.items():
+        if claimed in speakers and actual in speakers and claimed in enroll:
+            rows.append({"split": split, "claimed": claimed, "actual": actual,
+                         "uid": uid, "attack": attack, "label": label})
+trials = pd.DataFrame(rows)
+for split, frame in trials.groupby("split"):
+    assert set(frame.label) == {"target", "nontarget", "spoof"}, split
+sample = pd.concat([
+    group.sort_values("uid").sample(n=min(len(group), 10 if key[2] == "spoof" else 20),
+                                  random_state=20261109)
+    for key, group in trials.groupby(["split", "claimed", "label", "attack"])
+], ignore_index=True)
+assert set(sample[sample.split == "calibration"].uid).isdisjoint(sample[sample.split == "assessment"].uid)
+assert not sample.duplicated(["split", "claimed", "uid"]).any()
+out = reports / ("la_joint_" + os.environ["PBS_JOBID"])
+out.mkdir()
+sample.to_csv(out / "planned_trials.csv", index=False)
+needed = {uid for claim in sample.claimed.unique() for uid in enroll[claim]}
+reference_paths = {p.stem: p for p in (base / "ASVspoof2019_LA_dev").rglob("*.flac") if p.stem in needed}
+assert reference_paths.keys() == needed
+verifier = SpeakerVerifier.from_pretrained(root / "pretrained/speaker_assets", out / "model", prior["calibration_threshold"])
+templates = {claim: verifier.enroll(load_audio(reference_paths[uid])[0] for uid in enroll[claim])
+             for claim in sample.claimed.unique()}
+detector = Detector(root / "checkpoints/v3_wavlm_attn_20_fixed/best.pt")
+size = round(detector.seconds * 16000)
+outputs = []
+for index, (uid, group) in enumerate(sample.groupby("uid"), 1):
+    audio, _ = load_audio(manifest.at[uid, "audio_path"])
+    eligible = audio.size >= size and np.any(audio)
+    if eligible:
+        window = fixed_window(audio, size)
+        spoof = detector.score(window)["score"]
+        embedding = verifier.embedding(window)
+    for row in group.to_dict("records"):
+        row.update(synthetic=spoof if eligible else None,
+                   similarity=float(embedding @ templates[row["claimed"]]) if eligible else None)
+        outputs.append(row)
+    if index % 100 == 0:
+        print("Processed", index, flush=True)
+all_scores = pd.DataFrame(outputs)
+all_scores.to_csv(out / "trial_scores.csv", index=False)
+eligible = all_scores.dropna(subset=["synthetic", "similarity"])
+fit = eligible[eligible.split == "calibration"].copy()
+assessment = eligible[eligible.split == "assessment"].copy()
+priors = {"target": 0.5, "nontarget": 0.25, "spoof": 0.25}
+
+def features(frame):
+    s = np.clip(frame.synthetic.to_numpy(), 1e-7, 1 - 1e-7)
+    return np.column_stack([np.log(s / (1 - s)), 1 - frame.similarity.to_numpy()])
+
+def weights(frame):
+    counts = frame.label.value_counts()
+    assert set(counts.index) == set(priors)
+    return np.array([len(frame) * priors[label] / counts[label] for label in frame.label])
+
+model = LogisticRegression(random_state=20261109).fit(
+    features(fit), fit.label != "target", sample_weight=weights(fit))
+risk = model.predict_proba(features(assessment))[:, 1]
+assessment["risk"] = risk
+assessment.to_csv(out / "assessment_scores.csv", index=False)
+metrics = {"auc": float(roc_auc_score(assessment.label != "target", risk, sample_weight=weights(assessment))),
+           "brier": float(brier_score_loss(assessment.label != "target", risk, sample_weight=weights(assessment))),
+           "log_loss": float(log_loss(assessment.label != "target", risk, sample_weight=weights(assessment)))}
+counts = all_scores.groupby(["split", "label"]).synthetic.agg(["size", "count"]).reset_index()
+counts.to_csv(out / "coverage.csv", index=False)
+result = {"scope": "LA development research only, speaker-disjoint fit and assessment within the protocol. Risk is denial under the specified artificial class mixture, conditional on complete audio. No PA input, independent test tuning, operational probability or deployment claim.",
+          "priors": priors, "feature_order": ["synthetic_logit", "one_minus_speaker_cosine"],
+          "weights": model.coef_[0].tolist(), "intercept": float(model.intercept_[0]),
+          "assessment": metrics, "coverage": counts.to_dict("records")}
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

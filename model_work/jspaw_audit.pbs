@@ -1,0 +1,82 @@
+#!/bin/bash
+#PBS -N vg_jspaw_audit
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=2gb
+#PBS -l walltime=02:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/jspaw_audit_${PBS_JOBID}.log" 2>&1
+root=datasets/jspaw_interspeech
+for ((attempt=0; attempt<90; attempt++)); do
+    test ! -s "$root/jspaw.zip" || break
+    if flock -n "$root/.download.lock" true; then
+        test -s "$root/jspaw.zip" || { echo "Staging stopped before publication"; exit 1; }
+    fi
+    sleep 60
+done
+test -s "$root/jspaw.zip"
+(cd "$root" && sha256sum -c jspaw.zip.sha256)
+.venv/bin/python -u - <<'PY'
+import json
+import os
+import zipfile
+from collections import Counter, defaultdict
+from pathlib import Path, PurePosixPath
+
+root = Path("datasets/jspaw_interspeech")
+revision = (root / "protocol_revision").read_text().strip()
+assert revision == "074f4884e06b523087775e503dea07d8ec3c8154"
+members = defaultdict(Counter)
+with zipfile.ZipFile(root / "jspaw.zip") as archive:
+    corrupt = archive.testzip()
+    if corrupt is not None:
+        raise ValueError("ZIP CRC failure: " + corrupt)
+    for name in archive.namelist():
+        path = PurePosixPath(name)
+        if path.suffix.lower() == ".wav" and path.parent.name in {"ASV", "LA", "PA"}:
+            members[path.parent.name][path.stem] += 1
+
+def rows(name):
+    return [line.split() for line in (root / name).read_text().splitlines() if line.strip()]
+
+summary = {"revision": revision, "tasks": {}}
+asv = Counter()
+for label, left, right in rows("ASV_trial.txt"):
+    assert label in {"0", "1"}
+    a, b = PurePosixPath(left).stem, PurePosixPath(right).stem
+    assert (a.split("_")[0] == b.split("_")[0]) == (label == "1")
+    asv["rows"] += 1
+    if members["ASV"][a] != 1 or members["ASV"][b] != 1:
+        asv["missing_or_ambiguous"] += 1
+    else:
+        asv["matched"] += 1
+        if a.split("_")[1] != b.split("_")[1]:
+            asv["cross_room_target" if label == "1" else "cross_room_impostor"] += 1
+summary["tasks"]["ASV"] = dict(asv)
+enrolled = {name.split("_")[0] for name in members["ASV"]}
+for task in ("LA", "PA"):
+    counts = Counter()
+    for row in rows("metadata_" + task + ".txt"):
+        speaker, uid, label = row[0], row[1], row[-3]
+        assert label in {"bonafide", "spoof"}
+        counts["rows"] += 1
+        if members[task][uid] == 1:
+            counts["matched_" + label] += 1
+            if speaker in enrolled and uid.split("_")[0] == speaker:
+                counts["speaker_id_link_" + label] += 1
+            if task == "PA" and label == "spoof":
+                pieces = uid.split("_")
+                source = "_".join(pieces[:4] + pieces[-1:])
+                if members["ASV"][source] == 1:
+                    counts["asv_source_name_match"] += 1
+        else:
+            counts["missing_or_ambiguous_" + label] += 1
+    summary["tasks"][task] = dict(counts)
+summary["wav_members"] = {task: sum(counts.values()) for task, counts in members.items()}
+summary["scope"] = "Archive and name audit. Name matches do not establish capture-session or source lineage."
+out = Path("reports") / ("jspaw_audit_" + os.environ["PBS_JOBID"])
+out.mkdir()
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

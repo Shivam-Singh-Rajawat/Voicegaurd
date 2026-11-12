@@ -1,0 +1,78 @@
+#!/bin/bash
+#PBS -N vg_jspaw_join
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=2gb
+#PBS -l walltime=00:15:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/jspaw_joint_readiness_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -u - <<'PY'
+from collections import Counter, defaultdict
+import json
+import os
+from pathlib import Path, PurePosixPath
+
+root = Path("datasets/jspaw_interspeech")
+revision = (root / "protocol_revision").read_text().strip()
+assert revision == "074f4884e06b523087775e503dea07d8ec3c8154"
+assert Path("reports/jspaw_asv_46565.mgmt01/summary.json").is_file()
+members = defaultdict(Counter)
+for name in (root / "archive.list").read_text().splitlines():
+    path = PurePosixPath(name)
+    if path.suffix.lower() == ".wav":
+        members[path.parent.name][path.stem] += 1
+
+def rows(name):
+    return [line.split() for line in (root / name).read_text().splitlines() if line.strip()]
+
+target_refs = defaultdict(set)
+impostor_probes = set()
+for label, left, right in rows("ASV_trial.txt"):
+    ref, probe = PurePosixPath(left).stem, PurePosixPath(right).stem
+    if ref.split("_")[1] == probe.split("_")[1]:
+        continue
+    if label == "1":
+        target_refs[probe].add(ref)
+    else:
+        impostor_probes.add(probe)
+
+counts = {}
+controls = {}
+for task in ("LA", "PA"):
+    totals = Counter()
+    controls[task] = set()
+    for speaker, uid, *fields in rows("metadata_" + task + ".txt"):
+        label = fields[-3]
+        totals["official_" + label] += 1
+        if label == "bonafide":
+            controls[task].add(uid)
+            totals["unique_asv_control_match"] += members["ASV"][uid] == 1
+            continue
+        pieces = uid.split("_")
+        assert pieces[0] == speaker
+        totals["unique_attack_match"] += members[task][uid] == 1
+        if task == "PA":
+            candidates = ["_".join(pieces[:4] + pieces[-1:])]
+        else:
+            candidates = ["_".join(pieces[:2] + [parts, pieces[-1]])
+                          for parts in ("_".join((pieces[2], mic)) for mic in ("M1", "M2", "M3"))]
+        found = [name for name in candidates if members["ASV"][name] == 1]
+        totals["candidate_source_matches_" + str(len(found))] += 1
+        totals["candidate_source_with_cross_room_ref"] += any(target_refs[name] for name in found)
+    counts[task] = dict(totals)
+shared = controls["LA"] & controls["PA"]
+summary = {
+    "revision": revision,
+    "task_counts": counts,
+    "shared_genuine_controls": len(shared),
+    "shared_with_cross_room_target_ref": sum(bool(target_refs[uid]) for uid in shared),
+    "shared_with_cross_room_impostor_trial": len(shared & impostor_probes),
+    "scope": "Filename and official-trial audit only. Candidate names do not verify capture session or generation lineage.",
+    "calibration": "J-SpAW reserved for external evaluation. Separate representative calibration data required.",
+}
+out = Path("reports") / ("jspaw_joint_readiness_" + os.environ["PBS_JOBID"])
+out.mkdir()
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

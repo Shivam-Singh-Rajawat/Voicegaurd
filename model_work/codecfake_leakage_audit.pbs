@@ -1,0 +1,47 @@
+#!/bin/bash
+#PBS -N vg_codecleak
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=4gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/codecfake_leakage_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import csv
+import json
+import os
+from pathlib import Path
+import sqlite3
+
+root = Path.cwd()
+reports = root / "reports"
+sources = {
+    "train": (root / "manifests/voicegaurd_v2_la_asv5_train.csv", "audio_path"),
+    "codec": (reports / "dataset_readiness/CODECFAKE_COSG_PROTOCOL_MATCHED.csv", "path"),
+}
+db = sqlite3.connect((reports / "voicegaurd_preprocessing/preprocessing.sqlite3").as_uri() + "?mode=ro", uri=True)
+db.execute("PRAGMA temp_store=MEMORY")
+coverage = {}
+digests = {}
+for name, (path, column) in sources.items():
+    with path.open(newline="") as stream:
+        paths = {row[column] for row in csv.DictReader(stream)}
+    db.execute("CREATE TEMP TABLE lookup(path TEXT PRIMARY KEY)")
+    db.executemany("INSERT INTO lookup VALUES (?)", ((path,) for path in paths))
+    hashes = {row[0]: row[1] for row in db.execute(
+        "SELECT lookup.path, files.sha256 FROM lookup LEFT JOIN files ON files.path=lookup.path"
+    )}
+    db.execute("DROP TABLE lookup")
+    digests[name] = {path: digest for path, digest in hashes.items() if digest and len(digest) == 64}
+    coverage[name] = {"paths": len(paths), "with_sha256": len(digests[name])}
+train = set(digests["train"].values())
+matches = sorted(path for path, digest in digests["codec"].items() if digest in train)
+summary = {"coverage": coverage, "codecfake_paths_with_training_hash": len(matches),
+           "scope": "Exact byte-hash comparison using stored preprocessing hashes and the checked combined training manifest. Missing hashes, transformations and near duplicates are outside coverage."}
+out = reports / ("codecfake_leakage_" + os.environ["PBS_JOBID"])
+out.mkdir()
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+(out / "matched_codecfake_paths.json").write_text(json.dumps(matches, indent=2))
+print(json.dumps(summary, indent=2))
+PY

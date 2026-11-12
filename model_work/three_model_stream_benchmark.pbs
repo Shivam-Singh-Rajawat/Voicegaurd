@@ -1,0 +1,124 @@
+#!/bin/bash
+#PBS -N vg_streambench
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=00:20:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+exec > "logs/stream_benchmark_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+import json
+import os
+from pathlib import Path
+import resource
+from time import perf_counter
+
+import numpy as np
+import pandas as pd
+from voicegaurd_runtime.audio import load_audio
+from voicegaurd_runtime.inference import Detector, VoicegaurdInference
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+root = Path.cwd()
+reports = root / "reports"
+out = reports / ("stream_benchmark_" + os.environ["PBS_JOBID"])
+out.mkdir()
+prior = reports / "speaker_evaluation_46018.mgmt01"
+threshold = json.loads((prior / "results.json").read_text())["calibration_threshold"]
+trials = pd.read_csv(prior / "trials.csv")
+targets = trials[(trials.split == "assessment") & (trials.target == 1)]
+speaker = sorted(targets.claimed.unique())[0]
+targets = targets[targets.claimed == speaker].sort_values("uid").drop_duplicates("uid")
+manifest = pd.read_csv(root / "manifests/asv2019_la_dev.csv").set_index("audio_id", verify_integrity=True)
+needed = 60 * 16000
+segments = []
+uids = []
+count = 0
+for uid in targets.uid:
+    audio, _ = load_audio(manifest.at[uid, "audio_path"])
+    segments.append(audio[:needed - count])
+    uids.append(uid)
+    count += segments[-1].size
+    if count == needed:
+        break
+assert count == needed
+workload = np.concatenate(segments)
+protocol = root / "datasets/asvspoof2019/extracted/LA/ASVspoof2019_LA_asv_protocols"
+reference_ids = []
+for path in protocol.glob("*dev*.trn.txt"):
+    for line in path.read_text().splitlines():
+        claim, ids = line.split()
+        if claim == speaker:
+            reference_ids.extend(ids.split(","))
+assert reference_ids and not set(reference_ids) & set(uids)
+with np.load(prior / "embeddings.npz") as cache:
+    template = np.stack([cache[uid] for uid in reference_ids]).mean(axis=0)
+
+start = perf_counter()
+verifier = SpeakerVerifier.from_pretrained(root / "pretrained/speaker_assets", out / "model", threshold)
+engine = VoicegaurdInference({
+    "synthetic": Detector(root / "checkpoints/v3_wavlm_attn_20_fixed/best.pt"),
+    "replay": Detector(root / "checkpoints/v3_pa_wavlm/best.pt"),
+}, speaker_verifier=verifier, speaker_template=template)
+load_seconds = perf_counter() - start
+window = round(engine.window_seconds * 16000)
+engine.analyze_samples(workload[:window])
+
+def run(chunk_sizes):
+    session = engine.open_stream()
+    position = 0
+    index = 0
+    outputs = []
+    scored_times = []
+    started = perf_counter()
+    while position < len(workload):
+        size = chunk_sizes[index % len(chunk_sizes)]
+        chunk = workload[position:position + size]
+        start = perf_counter()
+        records = session.push(chunk)
+        elapsed = perf_counter() - start
+        assert len(records) <= 1
+        if records:
+            scored_times.append(elapsed)
+            outputs.extend(records)
+        position += len(chunk)
+        index += 1
+    expected = 1 + (len(workload) - window) // 16000
+    assert len(outputs) == expected
+    assert [record["start_seconds"] for record in outputs] == list(range(expected))
+    return outputs, scored_times, perf_counter() - started
+
+regular, times, elapsed = run((4000,))
+irregular, irregular_times, irregular_elapsed = run((257, 11713, 3011, 9001))
+for index, (a, b) in enumerate(zip(regular, irregular)):
+    for name in engine.detectors:
+        assert abs(a["evidence"][name]["score"] - b["evidence"][name]["score"]) <= 1e-6
+    assert abs(a["speaker_verification"]["similarity"] - b["speaker_verification"]["similarity"]) <= 1e-6
+    assert a["speaker_verification"]["matched"] == b["speaker_verification"]["matched"]
+    if index in {0, len(regular) - 1}:
+        direct = engine.analyze_samples(workload[index*16000:index*16000+window])
+        assert abs(direct["speaker_verification"]["similarity"] - a["speaker_verification"]["similarity"]) <= 1e-6
+        for name in engine.detectors:
+            assert abs(direct["evidence"][name]["score"] - a["evidence"][name]["score"]) <= 1e-6
+summary = {
+    "scope": "Three models on allocated CPU. Concatenated authorized development probes for timing only, no transport, live scheduling, accuracy or sustained-service claim.",
+    "probe_ids": uids,
+    "reference_count": len(reference_ids),
+    "audio_seconds": 60,
+    "window_seconds": engine.window_seconds,
+    "hop_seconds": 1,
+    "windows_per_run": len(regular),
+    "load_seconds": load_seconds,
+    "regular_processing_seconds": elapsed,
+    "irregular_processing_seconds": irregular_elapsed,
+    "regular_window_p50_seconds": float(np.quantile(times, .5)),
+    "regular_window_p95_seconds": float(np.quantile(times, .95)),
+    "irregular_window_p95_seconds": float(np.quantile(irregular_times, .95)),
+    "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+    "chunk_and_batch_parity": True,
+}
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print(json.dumps(summary, indent=2))
+PY

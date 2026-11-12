@@ -1,0 +1,57 @@
+#!/bin/bash
+#PBS -N vg_jointdata
+#PBS -q workq
+#PBS -l select=1:ncpus=1:mem=3gb
+#PBS -l walltime=00:10:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+exec > "logs/joint_data_${PBS_JOBID}.log" 2>&1
+.venv/bin/python - <<'PY'
+from collections import Counter
+import json
+import os
+from pathlib import Path
+
+root = Path.cwd()
+result = {"scope": "Development protocol feasibility only. No model fitting or evaluation split access.",
+          "domains": {}}
+for domain in ("LA", "PA"):
+    dataset = root / "datasets/asvspoof2019/extracted" / domain
+    protocols = dataset / f"ASVspoof2019_{domain}_asv_protocols"
+    enroll = {}
+    for file in sorted(protocols.glob("*dev*.trn.txt")):
+        for line in file.read_text().splitlines():
+            claim, references = line.split()
+            assert claim not in enroll
+            enroll[claim] = set(references.split(","))
+    assert enroll
+    required = set().union(*enroll.values())
+    trials = protocols / f"ASVspoof2019.{domain}.asv.dev.gi.trl.txt"
+    rows = []
+    for line in trials.read_text().splitlines():
+        claim, uid, *fields = line.split()
+        assert len(fields) == (2 if domain == "LA" else 3)
+        label = fields[-1]
+        assert label in {"target", "nontarget", "spoof"}
+        rows.append((claim, uid, label))
+    available = {file.stem for file in (dataset / f"ASVspoof2019_{domain}_dev").rglob("*.flac")}
+    probe = {uid for _, uid, _ in rows}
+    eligible = {claim for claim, ids in enroll.items() if ids <= available}
+    usable = Counter(label for claim, uid, label in rows
+                     if claim in eligible and uid in available and uid not in required)
+    result["domains"][domain] = {
+        "enrollment_templates": len(enroll), "reference_files": len(required),
+        "missing_reference_files": len(required - available),
+        "missing_probe_files": len(probe - available),
+        "reference_probe_overlap": len(required & probe),
+        "eligible_templates": len(eligible),
+        "protocol_labels": dict(Counter(label for _, _, label in rows)),
+        "usable_trial_labels": dict(usable),
+        "missing_reference_examples": sorted(required - available)[:5],
+    }
+out = root / "reports" / ("joint_data_" + os.environ["PBS_JOBID"])
+out.mkdir()
+(out / "summary.json").write_text(json.dumps(result, indent=2))
+print(json.dumps(result, indent=2))
+PY

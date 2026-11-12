@@ -1,0 +1,139 @@
+#!/bin/bash
+#PBS -N vg_himia_eval
+#PBS -q workq
+#PBS -l select=1:ncpus=4:mem=12gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+set -euo pipefail
+cd "$HOME/voicegaurd"
+export PYTHONPATH="$PWD/.speaker-deps:$PWD" CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 HF_HUB_OFFLINE=1
+exec > "logs/himia_frozen_${PBS_JOBID}.log" 2>&1
+.venv/bin/python -u - <<'PY'
+import csv
+import hashlib
+import io
+import json
+import os
+import re
+import tarfile
+from collections import Counter
+from math import gcd
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+import torch
+from scipy.signal import resample_poly
+from sklearn.metrics import roc_auc_score, roc_curve
+from voicegaurd_runtime.speaker import SpeakerVerifier
+
+torch.set_num_threads(4)
+root = Path("datasets/himia_openslr85")
+archive = root / "test_v2.tar.gz"
+out = Path("reports") / ("himia_frozen_" + os.environ["PBS_JOBID"])
+out.mkdir()
+threshold = json.loads(Path("reports/speaker_evaluation_46018.mgmt01/results.json").read_text())["calibration_threshold"]
+assert threshold == 0.4769288897514343
+assets = Path("pretrained/speaker_assets")
+digest = hashlib.sha256()
+with archive.open("rb") as handle:
+    for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+        digest.update(chunk)
+assert digest.hexdigest() == "a04a6bd0f084d91033a3ab3e4827b92fade36dfda9ef64d0eeec8cfc1899dc23"
+assert hashlib.sha256((assets / "embedding_model.ckpt").read_bytes()).hexdigest() == "0575cb64845e6b9a10db9bcb74d5ac32b326b8dc90352671d345e2ee3d0126a2"
+
+keys = {"test/trials_1m": 14065, "test/trials_mic": 14061}
+members = set((root / "archive.list").read_text().splitlines())
+rows = []
+with tarfile.open(archive, "r|gz") as stream:
+    seen = set()
+    for entry in stream:
+        if entry.name not in keys:
+            continue
+        assert entry.name not in seen
+        lines = stream.extractfile(entry).read().decode().splitlines()
+        assert len(lines) == keys[entry.name]
+        for line in lines:
+            left, right, label = line.split()
+            left, right = left.replace("{}", "00"), right.replace("{}", "00")
+            assert all(re.fullmatch(r"SV\d+_\d+_\d+_[A-Z]\d+\.wav", name) for name in (left, right))
+            speaker_a, _, _, utterance_a = left.split("_")
+            speaker_b, distance, _, utterance_b = right.split("_")
+            assert label in ("target", "nontarget") and (label == "target") == (speaker_a == speaker_b)
+            a, b = "test/wav/" + left, "test/wav/" + right
+            status = "eligible"
+            if speaker_a == speaker_b and utterance_a == utterance_b:
+                status = "same_utterance_code"
+            elif a not in members or b not in members:
+                status = "missing_channel"
+            rows.append([entry.name, distance, a, b, label, status, None])
+        seen.add(entry.name)
+        if seen == keys.keys():
+            break
+assert len(rows) == sum(keys.values())
+needed = {name for row in rows if row[5] == "eligible" for name in row[2:4]}
+print("Protocol audit:", dict(Counter(row[5] for row in rows)), "unique eligible WAVs:", len(needed))
+verifier = SpeakerVerifier.from_pretrained(assets, out / "model", threshold)
+embeddings, failures = {}, {}
+with tarfile.open(archive, "r|gz") as stream:
+    for entry in stream:
+        if entry.name not in needed:
+            continue
+        assert entry.isfile() and entry.name not in embeddings and entry.name not in failures
+        try:
+            samples, rate = sf.read(io.BytesIO(stream.extractfile(entry).read()), dtype="float32", always_2d=True)
+            mono = samples.mean(axis=1)
+            if rate != 16000:
+                divisor = gcd(rate, 16000)
+                mono = resample_poly(mono, 16000 // divisor, rate // divisor)
+            embeddings[entry.name] = verifier.embedding(mono)
+        except (ValueError, sf.LibsndfileError) as exc:
+            failures[entry.name] = str(exc)
+        if (len(embeddings) + len(failures)) % 1000 == 0:
+            print("Audio files attempted:", len(embeddings) + len(failures))
+
+for row in rows:
+    if row[5] != "eligible":
+        continue
+    a, b = row[2:4]
+    if a in embeddings and b in embeddings:
+        row[5] = "scored"
+        row[6] = float(np.clip(embeddings[a] @ embeddings[b], -1, 1))
+    else:
+        row[5] = "audio_failure"
+
+def summarize(group):
+    counts = dict(Counter(row[5] for row in group))
+    scored = [row for row in group if row[5] == "scored"]
+    result = {"counts": counts, "coverage": len(scored) / len(group)}
+    labels = np.array([row[4] == "target" for row in scored], dtype=bool)
+    scores = np.array([row[6] for row in scored])
+    result.update(target=int(labels.sum()), nontarget=int((~labels).sum()))
+    if labels.any() and (~labels).any():
+        fpr, tpr, _ = roc_curve(labels, scores, drop_intermediate=False)
+        fnr = 1 - tpr
+        index = np.argmin(np.abs(fpr - fnr))
+        accepts = scores > threshold
+        result.update(FAR=float(accepts[~labels].mean()), FRR=float((~accepts[labels]).mean()),
+                      EER=float((fpr[index] + fnr[index]) / 2), AUROC=float(roc_auc_score(labels, scores)))
+    return result
+
+with (out / "trials.csv").open("w", newline="") as handle:
+    writer = csv.writer(handle)
+    writer.writerow(["protocol", "probe_device_code", "enrollment", "probe", "label", "status", "cosine"])
+    writer.writerows(rows)
+summary = {"threshold": threshold, "archive_sha256": digest.hexdigest(),
+           "scope": "Official HI-MIA pairs with distinct utterance codes. Session separation and person-level VoxCeleb overlap unverified.",
+           "channel_policy": "Use channel 00 for official placeholders and preserve explicit channels.",
+           "unique_audio_required": len(needed), "unique_audio_scored": len(embeddings),
+           "audio_failures": failures, "overall": summarize(rows), "protocols": {}}
+for protocol in keys:
+    group = [row for row in rows if row[0] == protocol]
+    summary["protocols"][protocol] = summarize(group)
+    summary["protocols"][protocol]["by_probe_device"] = {
+        device: summarize([row for row in group if row[1] == device])
+        for device in sorted({row[1] for row in group})
+    }
+(out / "summary.json").write_text(json.dumps(summary, indent=2))
+print("Results:", out / "summary.json")
+PY
