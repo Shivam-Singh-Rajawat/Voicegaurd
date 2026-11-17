@@ -9,6 +9,7 @@ From the project folder in PowerShell:
 ```powershell
 .\runtime_work\Start-MicrophoneDemo.ps1 -ScanRecording
 .\runtime_work\Start-MicrophoneDemo.ps1 -PickAudio -ScanFile
+.\runtime_work\Start-MicrophoneDemo.ps1 -PickAudio -ScanFile -ScanReplay -OutputJson .\voicegaurd-evidence.json
 ```
 
 See the [Version 1 setup guide](runtime_work/DEMO_SETUP.md) for the required

@@ -1,7 +1,7 @@
 param(
     [switch]$SmokeTest, [string]$AudioPath, [switch]$PickAudio, [string]$SaveRecording,
     [string]$SpeakerAssets, [string[]]$ReferenceAudio, [switch]$ScanFile,
-    [string]$DemoRoot, [switch]$ScanRecording
+    [string]$DemoRoot, [switch]$ScanRecording, [switch]$ScanReplay, [string]$OutputJson
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +10,20 @@ if ($ScanFile -and !($AudioPath -or $PickAudio)) {
 }
 if ($ScanRecording -and ($AudioPath -or $PickAudio -or $SmokeTest)) {
     throw "ScanRecording requires microphone mode"
+}
+if ($ScanReplay -and !($ScanFile -or $ScanRecording)) {
+    throw "ScanReplay requires ScanFile or ScanRecording"
+}
+if ($OutputJson) {
+    $reportPath = [System.IO.Path]::GetFullPath($OutputJson)
+    if ([System.IO.Path]::GetExtension($reportPath) -ine ".json") {
+        throw "OutputJson must have a .json extension"
+    }
+    if (!(Test-Path -LiteralPath ([System.IO.Path]::GetDirectoryName($reportPath)) -PathType Container) -or
+        (Test-Path -LiteralPath $reportPath)) {
+        throw "Choose a new JSON path in an existing folder"
+    }
+    $OutputJson = $reportPath
 }
 if ([bool]$SpeakerAssets -ne [bool]$ReferenceAudio) {
     throw "Provide SpeakerAssets and authorized ReferenceAudio together"
@@ -87,6 +101,8 @@ try {
     if ($AudioPath) { $demoArgs += @("--audio", $AudioPath) }
     if ($ScanFile) { $demoArgs += "--scan-file" }
     if ($ScanRecording) { $demoArgs += "--scan-recording" }
+    if ($ScanReplay) { $demoArgs += "--scan-replay" }
+    if ($OutputJson) { $demoArgs += @("--output-json", $OutputJson) }
     if ($SaveRecording) { $demoArgs += @("--save-recording", $SaveRecording) }
     if ($SpeakerAssets) {
         $demoArgs += @("--speaker-assets", $SpeakerAssets)

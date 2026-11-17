@@ -162,3 +162,23 @@ the AI clip with music, and did not flag the human clip. PA scores were
 0.9999973774, 0.9999989271, and 0.9999989271. This confirms the live
 capture workflow. Three user-labeled clips cannot establish accuracy
 or isolate music as the cause of the miss. The verdict stays uncertain.
+
+## November 17, 2026 — Version 1 evidence export continuation
+
+Implemented optional `-ScanReplay` alongside the existing timestamped LA
+window scan, and `-OutputJson` for writing a fresh JSON evidence report
+without storing waveform audio. The file already existing is refused; the
+output is not encrypted, so local checkpoint paths and speaker scores should
+be treated as private. Model thresholds, checkpoint loading, centered-window
+scores, the full-window requirement, and the `uncertain` verdict are unchanged.
+
+GitHub feature branch:
+`feature/v1-evidence-export-replay-scan-20261117`.
+The isolated Windows clone used Python 3.14. Compilation of the modified
+Python modules succeeded. The complete runtime test suite reported
+**31 passed, 1 Starlette/HTTPX deprecation warning** with exit code 0.
+The test includes an emulated 12-second microphone capture, replay scan,
+JSON persistence, and invalid flag/overwrite rejection. No new live-microphone
+or pinned-checkpoint inference result was obtained during this change; those
+remain the previously recorded evidence. This is a demo usability improvement,
+not a new calibration or reduction in the two open research gates.

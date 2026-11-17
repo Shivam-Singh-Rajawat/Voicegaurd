@@ -37,6 +37,10 @@ def main():
                         help="Report synthetic-voice scores across a supplied recording")
     parser.add_argument("--scan-recording", action="store_true",
                         help="Report synthetic-voice scores across the microphone capture")
+    parser.add_argument("--scan-replay", action="store_true",
+                        help="Also scan raw replay scores on complete windows in scan mode")
+    parser.add_argument("--output-json", type=Path,
+                        help="Save the evidence report to a NEW JSON file, without saving audio")
     parser.add_argument("--speaker-assets", type=Path)
     parser.add_argument("--reference", type=Path, action="append", default=[])
     mode = parser.add_mutually_exclusive_group()
@@ -49,6 +53,13 @@ def main():
         parser.error("--scan-file requires --audio")
     if args.scan_recording and (args.audio is not None or args.smoke_test):
         parser.error("--scan-recording requires microphone mode")
+    if args.scan_replay and not (args.scan_file or args.scan_recording):
+        parser.error("--scan-replay requires --scan-file or --scan-recording")
+    if args.output_json is not None:
+        if args.output_json.suffix.lower() != ".json":
+            parser.error("--output-json needs a .json destination")
+        if not args.output_json.parent.is_dir() or args.output_json.exists():
+            parser.error("Choose a NEW JSON path in an existing folder")
     cutoff = args.synthetic_research_cutoff
     if cutoff is not None and not 0 <= cutoff <= 1:
         parser.error("Synthetic research cutoff must be between 0 and 1")
@@ -119,6 +130,14 @@ def main():
                 "windows": scan_synthetic_windows(samples, metadata["sample_rate"], detector),
                 "calibrated": False,
             }
+            if args.scan_replay:
+                replay_key = "replay_file_scan" if args.scan_file else "replay_microphone_scan"
+                result[replay_key] = {
+                    "windows": scan_synthetic_windows(
+                        samples, metadata["sample_rate"], engine.detectors["replay"]
+                    ),
+                    "calibrated": False,
+                }
         else:
             result = engine.analyze(path)
         analyze_seconds = perf_counter() - analyze_start
@@ -138,7 +157,7 @@ def main():
             indication = "synthetic_signal_detected"
         else:
             indication = "no_synthetic_signal_detected"
-        print(json.dumps({
+        report = {
             "decision": "uncertain",
             "reason": "No validated joint decision policy for this acquisition.",
             "detector_load_seconds": round(load_seconds, 3),
@@ -152,7 +171,12 @@ def main():
                 "scope": "single centered window; cutoff unvalidated for this input",
             },
             **result,
-        }, indent=2))
+        }
+        rendered = json.dumps(report, indent=2)
+        if args.output_json is not None:
+            with args.output_json.open("x", encoding="utf-8") as destination:
+                destination.write(rendered + "\n")
+        print(rendered)
 
 
 if __name__ == "__main__":
