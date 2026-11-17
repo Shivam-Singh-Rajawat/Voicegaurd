@@ -182,3 +182,37 @@ JSON persistence, and invalid flag/overwrite rejection. No new live-microphone
 or pinned-checkpoint inference result was obtained during this change; those
 remain the previously recorded evidence. This is a demo usability improvement,
 not a new calibration or reduction in the two open research gates.
+
+## 2026-11-17 — Offline browser V1 delivery
+
+Added a localhost browser interface (bundled HTML/CSS/JS), and integrated
+the preserved inference adapter through a bounded, serialized FastAPI
+upload API. It supports file upload or browser microphone capture,
+opt-in synthetic and replay timeline scans, optional ECAPA enrollment
+when the verifier is explicitly loaded, and a user-triggered JSON export.
+The API removes uploaded audio and enrollment files after each request
+and refuses cross-origin browser requests or untrusted hosts. The service
+listens only on 127.0.0.1 and does not contact cloud inference services.
+
+**Verification on user's Windows laptop:**
+- Python compilation succeeded for new backend/test modules.
+- Python 3.14 runtime regression suite: **39 passed, 1 pre-existing
+  Starlette/HTTPX deprecation warning, exit 0**.
+- Node JavaScript syntax check: exit 0.
+- Root web UI returned HTTP 200; /health returned ready and offline true.
+- With the pinned local LA/PA assets, Start-WebDemo.ps1 -SmokeTest
+  exited 0; on a generated sine tone, raw LA=0.0017877036007121205
+  and raw PA=0.9995741248130798 (not human/audio attack evidence).
+- End-to-end HTTP upload of a *different* 12-second generated sine tone
+  through the live pinned API succeeded, exit 0: overall decision uncertain,
+  raw LA=0.0019814784172922373, raw PA=0.9995418787002563,
+  3 synthetic scan windows and 3 replay scan windows. It tested actual
+  FastAPI upload handling, decoding, model inference, timeline and response.
+- The live local service was started on http://127.0.0.1:8765.
+
+No fresh physical microphone recording, real human/AI classification
+accuracy, cross-session ECAPA verification, or joint calibration is claimed
+from the V1 browser implementation. The research gates remain **7/9**.
+The authorized HPC SSH endpoint timed out before authentication, so no new
+remote scoring/training job was launched. SITW remains held pending access.
+See WEB_DEMO.md for reproduction, limitations and privacy boundaries.
