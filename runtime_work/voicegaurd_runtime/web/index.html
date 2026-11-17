@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0e17">
+  <title>Voicegaurd — Voice Evidence Lab</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <div><strong>Voicegaurd</strong><small>LOCAL EVIDENCE LAB</small></div>
+      </div>
+      <div class="sidebar-section">WORKSPACE</div>
+      <nav aria-label="Dashboard">
+        <a href="#analyze" class="nav-link selected"><span class="nav-icon">◉</span> Audio analysis</a>
+        <a href="#results" class="nav-link"><span class="nav-icon">▥</span> Results</a>
+        <a href="#method" class="nav-link"><span class="nav-icon">◇</span> Method & limitations</a>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="privacy-card"><span class="privacy-dot"></span><strong>Offline by design</strong><p>Your audio stays on this computer. Each uploaded sample is deleted after analysis.</p></div>
+        <div class="sidebar-version">VERSION 1.0 <span>•</span> RESEARCH DEMO</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="topbar">
+        <div class="breadcrumbs">Workspace <span>/</span> Audio analysis</div>
+        <div class="system-state"><span class="live-dot"></span><span id="backendStatus">Checking model environment…</span></div>
+      </div>
+
+      <section class="hero" id="analyze">
+        <div class="eyebrow"><span class="eyebrow-line"></span> AUDIO AUTHENTICITY RESEARCH</div>
+        <h1>Every voice leaves <em>evidence.</em></h1>
+        <p>Inspect a recording using real synthetic-speech, replay, and optional speaker-comparison models. Results are diagnostic—not an identity or authenticity certification.</p>
+        <div class="hero-chips">
+          <span><i class="chip-dot mint"></i> Synthetic-voice signals</span>
+          <span><i class="chip-dot purple"></i> Replay signals</span>
+          <span><i class="chip-dot blue"></i> Speaker comparison</span>
+        </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading">
+          <div><span class="section-index">01 / INPUT</span><h2>Add audio to investigate</h2></div>
+          <span class="hint">16 MB max · WAV, FLAC, OGG or MP3</span>
+        </div>
+        <div class="input-grid">
+          <label class="input-card file-card" for="audioFile">
+            <div class="input-card-icon">↥</div>
+            <strong>Upload audio</strong>
+            <span>Choose a recording from your device</span>
+            <span class="input-card-action" id="uploadLabel">Browse files <b>↗</b></span>
+            <input type="file" id="audioFile" accept=".wav,.flac,.ogg,.mp3,audio/*">
+          </label>
+          <div class="input-card record-card">
+            <div class="input-card-icon waveform-icon" aria-hidden="true">▂▅▇▃▆</div>
+            <strong>Use your microphone</strong>
+            <span>Capture a 12-second sample in your browser</span>
+            <button type="button" class="record-action" id="recordBtn">● &nbsp;Record 12 seconds</button>
+            <span id="recordCountdown" class="record-countdown" aria-live="polite"></span>
+          </div>
+        </div>
+        <div id="selectionStatus" class="selection-line" aria-live="polite">No audio selected yet.</div>
+      </section>
+
+      <section class="section-block options-block">
+        <div class="section-heading">
+          <div><span class="section-index">02 / CONFIGURE</span><h2>Analysis options</h2></div>
+          <span class="hint">No model retraining · Frozen research weights</span>
+        </div>
+        <div class="options-grid">
+          <label class="option-row"><span class="option-icon mint-text">◎</span><span class="option-copy"><strong>Window scan</strong><small>Timestamped synthetic-speech evidence across the recording</small></span><input id="scanCheck" type="checkbox" checked></label>
+          <label class="option-row"><span class="option-icon purple-text">◈</span><span class="option-copy"><strong>Replay window scan</strong><small>Additional full-window replay scores; takes longer</small></span><input id="replayCheck" type="checkbox"></label>
+        </div>
+        <label for="referenceFile" class="reference-label"><strong>Optional speaker enrollment clip</strong><span id="speakerStatus">Checking speaker model…</span></label>
+        <input type="file" id="referenceFile" accept=".wav,.flac,.ogg,.mp3,audio/*" disabled>
+        <p class="field-help">For speaker comparison, choose a recording you have permission to use, ideally recorded in a separate session.</p>
+        <button type="button" class="primary-button" id="analyzeBtn" disabled>Run voice analysis <span>↗</span></button>
+        <div id="actionStatus" class="action-status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="section-block results-block" id="results">
+        <div class="section-heading">
+          <div><span class="section-index">03 / EVIDENCE</span><h2>Analysis results</h2></div>
+          <button type="button" id="downloadBtn" class="secondary-button" disabled>↓ Export JSON report</button>
+        </div>
+        <div class="verdict-banner">
+          <div><div class="banner-kicker">OVERALL VOICE-ORIGIN VERDICT</div><strong id="verdictText">Awaiting analysis</strong><p id="verdictReason">A sample is needed to inspect the available detector evidence.</p></div>
+          <div id="verdictIcon" class="banner-symbol" aria-hidden="true">?</div>
+        </div>
+        <div class="metrics-grid">
+          <article class="metric-card"><div class="metric-heading"><span class="mini-dot mint"></span>SYNTHETIC SIGNAL</div><div id="syntheticScore" class="metric-value">—</div><p id="syntheticNote">Not analyzed</p><div class="metric-foot">Uncalibrated LA score</div></article>
+          <article class="metric-card"><div class="metric-heading"><span class="mini-dot purple"></span>REPLAY SIGNAL</div><div id="replayScore" class="metric-value">—</div><p id="replayNote">Not analyzed</p><div class="metric-foot">Uncalibrated PA score</div></article>
+          <article class="metric-card"><div class="metric-heading"><span class="mini-dot blue"></span>SPEAKER SIMILARITY</div><div id="speakerScore" class="metric-value">—</div><p id="speakerNote">Not configured</p><div class="metric-foot">ECAPA cosine similarity</div></article>
+        </div>
+        <div class="timeline-card">
+          <div class="timeline-header"><div><strong>Window-by-window evidence</strong><small>Only complete model windows are scored. No short-audio repetition.</small></div><span class="timeline-legend"><i class="mini-dot mint"></i> Synthetic <i class="mini-dot purple"></i> Replay</span></div>
+          <div id="timeline" class="timeline-empty">Run an analysis with window scanning to view the timeline.</div>
+        </div>
+      </section>
+
+      <section class="method" id="method">
+        <div class="method-icon">i</div>
+        <div><strong>How to interpret these numbers</strong><p>The scores come from preserved research checkpoints and are <b>not calibrated probabilities</b>. A low score does not prove a human speaker; a high score does not prove an attack. Short or silent audio may produce no score. Cross-session speaker robustness and representative joint-risk validation remain open, so Voicegaurd deliberately reports an <b>uncertain</b> verdict.</p></div>
+      </section>
+      <footer>VOICEGAURD / VERSION 1 &nbsp; · &nbsp; LOCAL PROCESSING &nbsp; · &nbsp; NO CLOUD UPLOADS</footer>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,5 +1,11 @@
 # Voicegaurd Version 1 for Windows
 
+**New:** The local browser dashboard is available using
+`Start-WebDemo.ps1`, with full instructions in [WEB_DEMO.md](WEB_DEMO.md).
+Run from the project root and open http://127.0.0.1:8765 after the
+models load. It uses the same pinned checkpoints and keeps the
+research verdict uncertain. The original CLI remains available below.
+
 Run these commands from the project folder in PowerShell. The launcher
 uses the Python environment and pinned LA, PA and WavLM files staged in
 the VoicegaurdDemo cache. It checks the detector and backbone digests
