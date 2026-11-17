@@ -50,9 +50,11 @@ def test_microphone_demo_captures_twelve_seconds_without_padding(monkeypatch, tm
 
     rate = 44100
     saved = tmp_path / "capture.wav"
+    report_path = tmp_path / "evidence.json"
     monkeypatch.setattr(sys, "argv", [
         "microphone_demo", "--synthetic", "la.pt", "--replay", "pa.pt",
         "--save-recording", str(saved), "--scan-recording",
+        "--scan-replay", "--output-json", str(report_path),
     ])
     monkeypatch.setattr("builtins.input", lambda prompt: None)
     torch = pytest.importorskip("torch")
@@ -86,6 +88,11 @@ def test_microphone_demo_captures_twelve_seconds_without_padding(monkeypatch, tm
     windows = result["synthetic_microphone_scan"]["windows"]
     assert len(windows) == 3
     assert windows[-1]["end_seconds"] == 12
+    replay = result["replay_microphone_scan"]
+    assert replay["calibrated"] is False
+    assert len(replay["windows"]) == 3
+    assert replay["windows"][-1]["end_seconds"] == 12
+    assert json.loads(report_path.read_text(encoding="utf-8")) == result
     assert soundfile.info(saved).frames == rate * 12
 
 
@@ -126,3 +133,25 @@ def test_stream_reports_speaker_evidence_and_abstains_on_no_signal():
     assert stream.push(np.ones(32000)) == []
     result = stream.push(np.ones(32600))[0]
     assert result["speaker_verification"] == {"similarity": 0.8, "matched": True}
+
+
+@pytest.mark.parametrize("extra,expected", [
+    (["--scan-replay"], "requires --scan-file or --scan-recording"),
+    (["--output-json", "existing.json"], "Choose a NEW JSON path"),
+    (["--output-json", "wrong.txt"], "needs a .json destination"),
+])
+def test_report_and_replay_flags_validate_before_model_loading(
+    monkeypatch, tmp_path, capsys, extra, expected
+):
+    import sys
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "existing.json").write_text("original", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [
+        "microphone_demo", "--synthetic", "la.pt", "--replay", "pa.pt",
+        "--smoke-test", *extra,
+    ])
+    with pytest.raises(SystemExit) as error:
+        microphone_demo.main()
+    assert error.value.code == 2
+    assert expected in capsys.readouterr().err
+    assert (tmp_path / "existing.json").read_text(encoding="utf-8") == "original"

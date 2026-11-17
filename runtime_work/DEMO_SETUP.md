@@ -36,6 +36,28 @@ under `synthetic_microphone_scan.windows`. Record each comparison clip
 separately, and use the same utterance and playback setup when comparing
 an AI clip with and without music.
 
+## Export a Version 1 evidence report
+
+To save the existing detector evidence as JSON, use `-OutputJson` with a new
+`.json` path. It will not overwrite an existing file and does **not** save
+the waveform. Use `-SaveRecording` separately when you have permission
+to retain microphone audio. Files may contain local checkpoint paths and
+speaker comparison scores; keep them private when they contain sensitive data.
+
+```powershell
+.\runtime_work\Start-MicrophoneDemo.ps1 -PickAudio -ScanFile -ScanReplay -OutputJson .\voicegaurd-evidence.json
+.\runtime_work\Start-MicrophoneDemo.ps1 -ScanRecording -ScanReplay -OutputJson .\voicegaurd-microphone-evidence.json
+```
+
+`-ScanReplay` adds `replay_file_scan.windows` or
+`replay_microphone_scan.windows` to the existing synthetic-voice scan.
+Each detector uses its own full trained window; no short-window padding
+is introduced. Scan windows have timestamps and a raw score or null for
+silence. Longer clips require additional inference time. The centered
+LA/PA scores and speaker score remain unchanged. **Neither scan is a
+calibrated replay or human-versus-AI verdict**. The overall decision
+remains `uncertain`.
+
 ## Setup on another Windows machine
 
 Use the staged installation if available. For a fresh installation, copy
