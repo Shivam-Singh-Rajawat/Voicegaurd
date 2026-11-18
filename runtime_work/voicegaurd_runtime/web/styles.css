@@ -136,3 +136,10 @@ footer { color: #63758d; text-align: center; font-size: 10px; letter-spacing: 1.
 .window-row progress.replay-meter::-webkit-progress-value { background: var(--purple); }
 .window-row progress::-moz-progress-bar { background: var(--mint); border-radius: 8px; }
 .window-row progress.replay-meter::-moz-progress-bar { background: var(--purple); }
+
+.prediction-panel { background: #102b32; border: 1px solid #377770; border-radius: 13px; padding: 25px; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 13px; }
+.prediction-panel .banner-kicker { color: #74d7c4; }
+.prediction-panel strong { display: block; margin-top: 5px; font-size: 25px; letter-spacing: -.6px; }
+.prediction-panel p { margin: 7px 0 0; max-width: 740px; color: #a4c9c4; font-size: 12px; }
+.prediction-status { border: 1px solid #3b8c7a; border-radius: 8px; padding: 7px 10px; color: #7bf2d8; font-size: 10px; letter-spacing: .9px; text-align: center; max-width: 150px; flex-shrink: 0; }
+@media (max-width: 640px) { .prediction-panel { display: block; } .prediction-status { display: inline-block; margin-top: 14px; } }

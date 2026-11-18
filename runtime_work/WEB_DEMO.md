@@ -54,8 +54,14 @@ smoke test, not a cross-session verification result.
    have no valid score.
 3. Optionally supply a reference clip if the speaker verifier was enabled
    when the server started.
-4. Run analysis and inspect independent raw LA, PA and ECAPA evidence.
-   The overall result remains **Uncertain** for this input scope.
+4. Run analysis. The dashboard always displays a separate **model prediction label**:
+   **AI-generated**, **Human**, or **Unknown** (for abstentions).
+   These labels come from a frozen standalone LA research cutoff, and each
+   includes a **PROVISIONAL / NOT VERIFIED** flag. The Human label means only
+   that the trained model score was below its diagnostic cutoff; external
+   benchmarks demonstrate missed fakes. It is not an authenticity guarantee.
+   Inspect the independent raw LA, PA and optional ECAPA evidence.
+   The **overall security verdict stays Uncertain** for this input scope.
 5. Export the complete JSON result through the browser if needed. Exporting
    requires an explicit button click; scores are not silently persisted.
 

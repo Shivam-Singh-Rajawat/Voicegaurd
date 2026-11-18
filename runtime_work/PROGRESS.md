@@ -216,3 +216,46 @@ from the V1 browser implementation. The research gates remain **7/9**.
 The authorized HPC SSH endpoint timed out before authentication, so no new
 remote scoring/training job was launched. SITW remains held pending access.
 See WEB_DEMO.md for reproduction, limitations and privacy boundaries.
+
+## November 18, 2026 — Mandatory human/AI label and gate safeguards
+
+The browser, CLI and FastAPI result now always include a separate
+prediction object with a **Human**, **AI-generated**, or **Unknown**
+model label, a provisional or abstained status, the frozen LA research
+cutoff and a nonvalidated-security disclaimer. A Human label is only the
+negative class of the LA diagnostic classifier, not proof of genuine speech.
+The browser highlights its unreliability based on the new EchoFake
+development response audit. The overall security decision remains
+uncertain; replay and identity evidence are kept separate.
+
+The EchoFake exploratory development-only audit scored 41/48 examples.
+Among the scored examples, 0/19 synthetic recordings tripped the frozen
+LA cutoff and 7/10 genuine non-replayed recordings tripped the frozen
+PA replay cutoff; this is a known deployment-domain limitation, not an
+independent benchmark. See model_work/ECHOFAKE_20261118.md.
+
+Combined local regression suite (runtime + gate checker) passed 55 tests
+with one existing deprecation warning; frontend syntax/compilation passed.
+This update does not close the speaker robustness or calibrated joint
+risk research gates.
+
+## November 18, 2026 — Labeled live API and ECAPA smoke
+
+Added mandatory Human/AI-generated/Unknown model prediction label, always
+reported with unvalidated/provisional status and unchanged uncertain
+security decision. ECAPA speaker comparison adds a separate provisional
+Match/Mismatch/Unknown label when a supplied reference can be scored.
+
+Actual pinned LA+PA HTTP upload with a locally generated 12-second tone
+passed at localhost:8766 with the new prediction field. A separate local
+server at localhost:8767 loaded the real SpeechBrain 1.1.2 ECAPA weights
+and returned cosine 1.0 for an identical tone used for probe/enrollment;
+that deliberately self-matched tone is ONLY an integration test, not
+speaker/session robustness. Both HTTP smoke commands exited 0.
+
+Combined Python suite: 56 passed, 1 dependency deprecation warning.
+Node JavaScript syntax, Python compilation and git whitespace checks
+exited 0. EchoFake raw audit and strict gate checker are documented
+in model_work/ECHOFAKE_20261118.md. Gate8/Gate9 remain open due
+insufficient aligned, independently separated evaluation and failed
+frozen external-domain detector performance.

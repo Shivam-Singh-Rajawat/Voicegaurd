@@ -157,8 +157,10 @@ def main():
             indication = "synthetic_signal_detected"
         else:
             indication = "no_synthetic_signal_detected"
+        from .labels import prediction_label
         report = {
             "decision": "uncertain",
+            "prediction": prediction_label(result),
             "reason": "No validated joint decision policy for this acquisition.",
             "detector_load_seconds": round(load_seconds, 3),
             "analysis_seconds": round(analyze_seconds, 3),

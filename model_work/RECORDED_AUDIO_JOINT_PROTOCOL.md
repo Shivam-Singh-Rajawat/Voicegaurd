@@ -120,3 +120,36 @@ trial_id,scope,partition,probe_path,probe_sha256,probe_session,source_lineage,ac
 The user approved the provisional rates above for this validation plan.
 Apply them when representative separated data are available. Approval of
 the rates does not establish that any current policy meets them.
+
+## Automated strict acceptance check
+
+The reproducible helper `model_work/gate_acceptance.py` consumes a
+private copy of the trial CSV above **augmented with**
+`synthetic_score,replay_score,speaker_similarity` for every trial.
+Use the exact provenance, partition and authorization columns shown
+above; supply `calibration` and `assessment` as partition values,
+`microphone` or `file` as separate scopes. Use only verified
+`human|synthetic` origin, `direct|replay` presentation and
+`target|impostor` speaker relationships.
+
+Example using an existing fully scored and authorized manifest:
+
+~~~powershell
+py -3.14 model_work/gate_acceptance.py C:\private\aligned_trials.csv --report C:\private\gate_results.json
+~~~
+
+The helper fails closed on missing or inconsistent speaker claims,
+enrollment/probe session duplication, re-used audio, cross-partition
+speaker/source lineage overlap, and unscorable trials. It fits
+threshold candidates on **calibration only**, assesses held-out
+groups once and uses a conservative one-sided 95% speaker-cluster
+error upper bound for the previously approved limits. A tiny
+dataset with zero observed errors is **not** a pass.
+
+For independent model acceptance, separately verify genuine source
+annotations, recording-session independence, source lineage,
+checkpoint digests, acquisition representativeness and limits
+before promoting any calculated result to a deployed security policy.
+This tool does not create labels, invent authorizations or discover
+recording sessions. EchoFake's native dev rows lack the required
+speaker/enrollment provenance and produce a blocked gate report.

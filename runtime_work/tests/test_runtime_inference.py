@@ -85,6 +85,9 @@ def test_microphone_demo_captures_twelve_seconds_without_padding(monkeypatch, tm
     assert result["input_source"] == "microphone"
     assert result["audio"]["duration"] == 12
     assert result["voice_origin"]["verdict"] == "uncertain"
+    assert result["prediction"]["label"] == "AI-generated"
+    assert result["prediction"]["status"] == "provisional"
+    assert result["prediction"]["security_decision"] == "uncertain"
     windows = result["synthetic_microphone_scan"]["windows"]
     assert len(windows) == 3
     assert windows[-1]["end_seconds"] == 12

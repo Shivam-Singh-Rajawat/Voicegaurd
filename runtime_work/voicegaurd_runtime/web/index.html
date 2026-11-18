@@ -90,8 +90,12 @@
           <div><span class="section-index">03 / EVIDENCE</span><h2>Analysis results</h2></div>
           <button type="button" id="downloadBtn" class="secondary-button" disabled>↓ Export JSON report</button>
         </div>
+        <div class="prediction-panel" aria-live="polite">
+          <div><div class="banner-kicker">MANDATORY MODEL PREDICTION · NOT VERIFIED</div><strong id="predictionLabel">Awaiting audio</strong><p id="predictionReason">A research-model label (Human, AI-generated, or Unknown) appears after analysis. These are not calibrated security decisions.</p></div>
+          <span class="prediction-status" id="predictionStatus">NO RESULT</span>
+        </div>
         <div class="verdict-banner">
-          <div><div class="banner-kicker">OVERALL VOICE-ORIGIN VERDICT</div><strong id="verdictText">Awaiting analysis</strong><p id="verdictReason">A sample is needed to inspect the available detector evidence.</p></div>
+          <div><div class="banner-kicker">OVERALL SECURITY VERDICT</div><strong id="verdictText">Awaiting analysis</strong><p id="verdictReason">A sample is needed to inspect the available detector evidence.</p></div>
           <div id="verdictIcon" class="banner-symbol" aria-hidden="true">?</div>
         </div>
         <div class="metrics-grid">

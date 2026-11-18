@@ -37,6 +37,9 @@ def main():
         response.raise_for_status()
         report = response.json()
         assert report["decision"] == "uncertain"
+        assert report["prediction"]["label"] in ("Human", "AI-generated", "Unknown")
+        assert report["prediction"]["security_decision"] == "uncertain"
+        assert report["prediction"]["label_validation"] == "not_validated_for_this_input"
         assert report["calibrated"] is False
         assert report["input_source"] == "uploaded_audio"
         assert report["audio"]["duration"] == seconds
