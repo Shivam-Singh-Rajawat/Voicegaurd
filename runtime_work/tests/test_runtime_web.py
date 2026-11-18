@@ -73,6 +73,9 @@ def test_upload_result_is_uncertain_and_temp_file_removed():
                            files={"file": ("../../probe.wav", b"example")})
     assert response.status_code == 200
     assert response.json()["decision"] == "uncertain"
+    assert response.json()["prediction"]["label"] == "AI-generated"
+    assert response.json()["prediction"]["status"] == "provisional"
+    assert response.json()["prediction"]["security_decision"] == "uncertain"
     assert response.json()["calibrated"] is False
     assert not engine.last_path.exists()
 
@@ -141,6 +144,7 @@ def test_speaker_requires_model_and_uses_per_request_enrollment():
     got = with_speaker.post("/analyze", files=payload)
     assert got.status_code == 200, got.text
     assert got.json()["speaker_verification"]["similarity"] == 0.77
+    assert got.json()["prediction"]["speaker_prediction"] == "Match (provisional)"
     assert got.json()["decision"] == "uncertain"
 
 

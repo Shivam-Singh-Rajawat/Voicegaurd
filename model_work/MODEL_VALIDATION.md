@@ -359,3 +359,33 @@ flagged. AUROC 0.9032 and EER 4.84% describe only the scored subset
 and are not reliable deployment evidence with one genuine clip.
 Keep voice-origin and joint verdicts uncertain in this scope.
 Evidence: reports/jspaw_la_46570.mgmt01/summary.json and scores.jsonl.
+
+## November 18, 2026 — EchoFake frozen external-domain diagnostic
+
+On the pinned public EchoFake *development* revision
+`4d8bd5f8458b55770d9cac6b944c7bd016168d3a`, 48 files
+were sampled across four genuine/synthetic and direct/replayed classes,
+with a deterministic nonrandom block-selection design (12 per class).
+All recordings were processed by the real pinned LA/PA checkpoints;
+41 received complete-window scores, seven abstained and zero failed.
+
+**The standalone LA frozen cutoff flagged 0/19 scored synthetic clips.**
+PA flagged 20/21 scored physical replay attacks but also 7/10 scored
+non-replayed human recordings. This is an adverse transfer check, not
+a calibrated or independent benchmark and it does not satisfy the
+approved operational error limits. Full per-class counts, sampling scope
+and reproduction are in [ECHOFAKE_20261118.md](ECHOFAKE_20261118.md).
+
+The EchoFake source speaker ID alone is not a verified enrollment/probe
+capture-session or claimed-identity trial label. Neither remaining gate
+can be marked passed from these scores. A machine-checkable
+[gate acceptance tool](gate_acceptance.py) rejects unverified provenance,
+cross-partition speaker/source leaks, insufficient sample support,
+and missing joint calibration data before considering approved limits.
+
+Version 1 shows mandatory **Human / AI-generated / Unknown** provisional
+research-model labels, plus a provisional ECAPA match/mismatch when
+enrollment is provided. It warns about missed external-domain synthetic
+examples, and retains **Uncertain** as the operational verdict.
+**Model validation remains 7/9 gates** until new independently qualified
+speaker-session and aligned joint trials actually meet the limits.

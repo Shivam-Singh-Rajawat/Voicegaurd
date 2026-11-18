@@ -112,8 +112,10 @@ def create_app(engine=None, *, speaker_verifier=None):
         else:
             result = active.analyze(path)
 
+        from .labels import prediction_label
         return {"decision": "uncertain",
                 "reason": "No validated joint policy for arbitrary microphone or file audio.",
+                "prediction": prediction_label(result),
                 "calibrated": False,
                 "input_source": "uploaded_audio",
                 **result}

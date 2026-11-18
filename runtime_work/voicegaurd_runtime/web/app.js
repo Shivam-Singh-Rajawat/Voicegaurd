@@ -209,6 +209,15 @@ function renderTimeline(report) {
 function renderReport(report) {
   lastReport = report;
   $("downloadBtn").disabled = false;
+  const predicted = report.prediction || {label: "Unknown", status: "missing",
+    reason: "The model did not supply a verified prediction label."};
+  $("predictionLabel").textContent = predicted.label;
+  $("predictionStatus").textContent = predicted.status !== "provisional"
+    ? "ABSTAINED" : predicted.label === "Human"
+    ? "UNRELIABLE NEGATIVE" : "UNVERIFIED PREDICTION";
+  $("predictionReason").textContent = predicted.reason + " " +
+    (predicted.validation_warning || "") +
+    " Security decision: uncertain. Label is not a probability or confirmed ground truth.";
   $("verdictText").textContent = "Uncertain";
   $("verdictIcon").textContent = "?";
   $("verdictReason").textContent = report.reason ||
@@ -220,7 +229,10 @@ function renderReport(report) {
   const speaker = report.speaker_verification;
   if (typeof speaker === "object" && speaker !== null) {
     setMetric("speakerScore", "speakerNote", speaker.similarity,
-              speaker.status || "Research speaker comparison");
+              (report.prediction && report.prediction.speaker_prediction &&
+               report.prediction.speaker_prediction !== "Unknown"
+               ? report.prediction.speaker_prediction + " — research-only"
+               : speaker.status || "Research speaker comparison"));
   } else {
     setMetric("speakerScore", "speakerNote", null, "No speaker reference provided");
   }

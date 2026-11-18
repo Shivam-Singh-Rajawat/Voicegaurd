@@ -84,3 +84,24 @@ and the [ungated dataset review](model_work/ALTERNATIVE_DATASETS_20261117.md).
 The original HPC scripts under model_work require the authorized cluster
 or adaptation to another research system. Do not deploy the local API
 to the public internet without a separate security and model validation review.
+
+## Explicit prediction labels (November 2026)
+
+After analysis, the browser and CLI report a mandatory, distinctly marked
+**model prediction label**: `Human`, `AI-generated`, or `Unknown`.
+This is a provisional result from the frozen LA research cutoff, not a
+validated probability of authenticity. The operational security decision
+remains `uncertain` for arbitrary microphone and uploaded audio.
+
+**Known limitation:** In a new development-only exploratory 48-file
+EchoFake audit, the frozen LA threshold failed to flag all 19 scored
+synthetic examples; PA also flagged 7 of 10 scored non-replayed genuine
+examples. Do not rely on the Human/AI diagnostic label to verify identity,
+make fraud decisions, or deny access. See
+[EchoFake development evidence](model_work/ECHOFAKE_20261118.md).
+
+The strict [gate acceptance checker](model_work/gate_acceptance.py)
+requires provenance-verified speaker/session-disjoint calibration and
+held-out assessment before determining whether the remaining research
+gates meet their approved error/abstention limits. The project research
+status remains **7/9 gates**, not 9/9.

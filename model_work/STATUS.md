@@ -1096,3 +1096,27 @@ among 636 genuine clips and 615 false negatives among 736 synthetic
 clips. The current input scopes retain an Uncertain voice-origin verdict.
 Speaker robustness and joint calibration remain open research gates.
 SITW remains on hold.
+
+## November 18, 2026 — Frozen external-dataset audit and visible labels
+
+User requested closure of speaker robustness and calibrated multi-evidence
+risk, and a required label in demo output. Scientific gates remain 7/9;
+success cannot be claimed by relabeling benchmarks or tuning on test data.
+
+Downloaded 48 EchoFake development samples from pinned public dataset
+revision 4d8bd5f8458b55770d9cac6b944c7bd016168d3a, 12 of each class.
+Scored 41, abstained 7 due short duration, failed 0. Frozen LA flagged
+0/19 scored synthetic clips; PA flagged 20/21 scored replay clips but
+also 7/10 scored genuine/non-replayed clips. See ECHOFAKE_20261118.md
+for scope and exact observed counts. Dataset does not provide verified
+speaker enrollment/session/claim linkage needed for both open gates.
+No score tuning or model retraining performed.
+
+Added visible Human/AI-generated/Unknown **provisional** model labels to
+API, CLI and browser, with an explicit out-of-domain failure warning.
+Security decision remains uncertain. Added gate_acceptance.py to require
+verified aligned calibration/assessment manifests, speaker/session/source
+separation, matched identity labels, and approved confidence limits
+before returning a pass. Local model+runtime regression: 55 tests passed,
+one known Starlette/HTTPX deprecation warning. No new HPC scoring job:
+SSH remains unverified/reachability was not demonstrated this run.
